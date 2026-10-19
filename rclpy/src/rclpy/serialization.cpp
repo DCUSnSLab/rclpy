@@ -22,12 +22,72 @@
 #include <rmw/serialized_message.h>
 #include <rosidl_runtime_c/message_type_support_struct.h>
 
+#include <algorithm>
+#include <cstring>
+#include <utility>
+
 #include "exceptions.hpp"
 #include "serialization.hpp"
 #include "utils.hpp"
 
 namespace rclpy
 {
+namespace
+{
+struct SerializedBytes
+{
+  py::object bytes;
+
+  static void * allocate(size_t size, void * state)
+  {
+    if (size > static_cast<size_t>(PY_SSIZE_T_MAX)) {
+      PyErr_NoMemory();
+      return nullptr;
+    }
+    PyObject * buffer = PyBytes_FromStringAndSize(nullptr, size);
+    if (!buffer) {
+      return nullptr;
+    }
+    static_cast<SerializedBytes *>(state)->bytes = py::reinterpret_steal<py::object>(buffer);
+    return PyBytes_AS_STRING(buffer);
+  }
+
+  static void deallocate(void *, void * state)
+  {
+    static_cast<SerializedBytes *>(state)->bytes = py::object();
+  }
+
+  static void * reallocate(void * pointer, size_t size, void * state)
+  {
+    auto & bytes = static_cast<SerializedBytes *>(state)->bytes;
+    py::object previous = std::move(bytes);
+    void * buffer = allocate(size, state);
+    if (!buffer) {
+      bytes = std::move(previous);
+      return nullptr;
+    }
+    if (pointer) {
+      memcpy(buffer, pointer,
+        std::min(size, static_cast<size_t>(PyBytes_GET_SIZE(previous.ptr()))));
+    }
+    return buffer;
+  }
+
+  static void * zero_allocate(size_t count, size_t size, void * state)
+  {
+    if (size && count > static_cast<size_t>(PY_SSIZE_T_MAX) / size) {
+      PyErr_NoMemory();
+      return nullptr;
+    }
+    void * buffer = allocate(count * size, state);
+    if (buffer) {
+      memset(buffer, 0, count * size);
+    }
+    return buffer;
+  }
+};
+}  // namespace
+
 SerializedMessage::SerializedMessage(rcutils_allocator_t allocator)
 {
   rcl_msg = rmw_get_zero_initialized_serialized_message();
@@ -65,19 +125,29 @@ serialize(py::object pymsg, py::object pymsg_type)
     throw py::error_already_set();
   }
 
-  // Create a serialized message object
-  SerializedMessage serialized_msg(rcutils_get_default_allocator());
-
-  // Serialize
-  rmw_ret_t rmw_ret = rmw_serialize(ros_msg.get(), ts, &serialized_msg.rcl_msg);
-  if (RMW_RET_OK != rmw_ret) {
-    throw RMWError("Failed to serialize ROS message");
+  // Keep the bytes private until the middleware has finished writing.
+  SerializedBytes storage;
+  rcutils_allocator_t allocator = {
+    SerializedBytes::allocate, SerializedBytes::deallocate,
+    SerializedBytes::reallocate, SerializedBytes::zero_allocate, &storage};
+  PyObject * bytes;
+  size_t length;
+  {
+    SerializedMessage serialized_msg(allocator);
+    rmw_ret_t rmw_ret = rmw_serialize(ros_msg.get(), ts, &serialized_msg.rcl_msg);
+    if (RMW_RET_OK != rmw_ret) {
+      if (PyErr_Occurred()) {
+        throw py::error_already_set();
+      }
+      throw RMWError("Failed to serialize ROS message");
+    }
+    length = serialized_msg.rcl_msg.buffer_length;
+    bytes = storage.bytes.release().ptr();
   }
-
-  // Bundle serialized message in a bytes object
-  return py::bytes(
-    reinterpret_cast<const char *>(serialized_msg.rcl_msg.buffer),
-    serialized_msg.rcl_msg.buffer_length);
+  if (_PyBytes_Resize(&bytes, length) < 0) {
+    throw py::error_already_set();
+  }
+  return py::reinterpret_steal<py::bytes>(bytes);
 }
 
 py::object

@@ -71,3 +71,20 @@ def test_set_float32():
     msg_serialized = serialize_message(msg)
     msg_deserialized = deserialize_message(msg_serialized, BasicTypes)
     assert msg.float32_value == round(msg_deserialized.float32_value, 2)
+
+
+@pytest.mark.parametrize('size', [0, 1, 127, 65536, 1048576])
+def test_serialized_bytes_ownership(size):
+    """Keep serialized bytes independent of messages and later serializations."""
+    msg = UnboundedSequences()
+    msg.uint8_values = bytes([127]) * size
+    serialized = serialize_message(msg)
+    assert type(serialized) is bytes
+    snapshot = bytes(bytearray(serialized))
+    msg.uint8_values = bytes([255]) * size
+    other = serialize_message(msg)
+    assert deserialize_message(other, UnboundedSequences) == msg
+    del other
+    assert serialized == snapshot
+    restored = deserialize_message(serialized, UnboundedSequences)
+    assert list(restored.uint8_values) == [127] * size
