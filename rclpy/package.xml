@@ -25,6 +25,7 @@
 
   <depend>lifecycle_msgs</depend>
   <depend>rcl</depend>
+  <depend>rcl_executor</depend>
   <depend>rcl_interfaces</depend>
   <depend>rcl_lifecycle</depend>
   <depend>rcl_logging_interface</depend>

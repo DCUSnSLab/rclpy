@@ -57,6 +57,11 @@
 
 namespace py = pybind11;
 
+namespace rclpy
+{
+void define_rcl_executor(pybind11::module_ & module);
+}
+
 PYBIND11_MODULE(_rclpy_pybind11, m) {
   m.doc() = "ROS 2 Python client library.";
 
@@ -252,4 +257,5 @@ PYBIND11_MODULE(_rclpy_pybind11, m) {
   rclpy::define_lifecycle_api(m);
 
   rclpy::events_executor::define_events_executor(m);
+  rclpy::define_rcl_executor(m);
 }

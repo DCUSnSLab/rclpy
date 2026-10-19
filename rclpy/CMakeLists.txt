@@ -28,6 +28,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
 find_package(rcl REQUIRED)
+find_package(rcl_executor REQUIRED)
 find_package(rcl_action REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(rcl_lifecycle REQUIRED)
@@ -89,6 +90,7 @@ pybind11_add_module(_rclpy_pybind11
   src/rclpy/events_executor/events_queue.cpp
   src/rclpy/events_executor/rcl_support.cpp
   src/rclpy/events_executor/timers_manager.cpp
+  src/rclpy/rcl_executor/rcl_executor.cpp
   src/rclpy/exceptions.cpp
   src/rclpy/graph.cpp
   src/rclpy/guard_condition.cpp
@@ -123,6 +125,7 @@ target_link_libraries(_rclpy_pybind11 PRIVATE
   lifecycle_msgs::lifecycle_msgs__rosidl_generator_c
   lifecycle_msgs::lifecycle_msgs__rosidl_typesupport_c
   rcl::rcl
+  rcl_executor::rcl_executor
   rcl_action::rcl_action
   ${rcl_interfaces_TARGETS}
   rcl_lifecycle::rcl_lifecycle
@@ -183,6 +186,7 @@ if(BUILD_TESTING)
       test/test_destruction.py
       test/test_events_executor.py
       test/test_executor.py
+      test/test_rcl_executor.py
       test/test_expand_topic_name.py
       test/test_guard_condition.py
       test/test_init_shutdown.py

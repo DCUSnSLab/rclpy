@@ -279,6 +279,8 @@ class MutuallyExclusiveWaitable(Waitable):
 
 class TestWaitable(unittest.TestCase):
 
+    executor_type = SingleThreadedExecutor
+
     @classmethod
     def setUpClass(cls):
         cls.context = rclpy.context.Context()
@@ -286,7 +288,7 @@ class TestWaitable(unittest.TestCase):
         cls.node = rclpy.create_node(
             'TestWaitable', namespace='/rclpy/test', context=cls.context,
             allow_undeclared_parameters=True)
-        cls.executor = SingleThreadedExecutor(context=cls.context)
+        cls.executor = cls.executor_type(context=cls.context)
         cls.executor.add_node(cls.node)
 
     @classmethod

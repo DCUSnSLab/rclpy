@@ -25,7 +25,7 @@ from rclpy.executors import Executor
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.executors import ShutdownException
 from rclpy.executors import SingleThreadedExecutor
-from rclpy.experimental import EventsExecutor
+from rclpy.experimental import EventsExecutor, RclExecutor
 from rclpy.task import Future
 from test_msgs.srv import Empty
 
@@ -62,7 +62,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_single_threaded_executor_executes(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
@@ -72,7 +72,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_immediate_shutdown(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
@@ -102,7 +102,7 @@ class TestExecutor(unittest.TestCase):
     def test_shutdown_executor_before_waiting_for_callbacks(self) -> None:
         self.assertIsNotNone(self.node.handle)
         # EventsExecutor does not support the wait_for_ready_callbacks() API
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.shutdown()
@@ -112,7 +112,7 @@ class TestExecutor(unittest.TestCase):
     def test_shutdown_exception_from_callback_generator(self) -> None:
         self.assertIsNotNone(self.node.handle)
         # This test touches the Executor private API and is not compatible with EventsExecutor
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 cb_generator = executor._wait_for_ready_callbacks()
@@ -122,7 +122,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_remove_node(self) -> None:
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
 
@@ -199,7 +199,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_add_node_to_executor(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -207,7 +207,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_spin_non_blocking(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -218,7 +218,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_execute_coroutine_timer(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -280,7 +280,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_task_coroutine(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -297,7 +297,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_task_coroutine_yield(self) -> None:
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -331,7 +331,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_task_coroutine_cancel(self) -> None:
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -354,7 +354,7 @@ class TestExecutor(unittest.TestCase):
     def test_create_task_coroutine_wake_from_another_thread(self) -> None:
         self.assertIsNotNone(self.node.handle)
 
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 thread_future = executor.create_future()
@@ -385,7 +385,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_task_normal_function(self) -> None:
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -402,7 +402,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_task_dependent_coroutines(self) -> None:
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -434,7 +434,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_task_during_spin(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -485,7 +485,7 @@ class TestExecutor(unittest.TestCase):
                     yield
                 return
 
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 trigger = TriggerAwait()
                 did_callback = False
@@ -510,7 +510,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_add_node(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 assert executor.add_node(self.node)
@@ -520,7 +520,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_spin_until_future_complete_timeout(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -544,7 +544,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_spin_until_future_complete_future_done(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -587,7 +587,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_spin_until_future_complete_do_not_wait(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 executor.add_node(self.node)
@@ -606,7 +606,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_executor_add_node_wakes_executor(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 got_callback = False
 
@@ -676,7 +676,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_single_threaded_spin_once_until_future(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
 
@@ -734,7 +734,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_not_lose_callback(self):
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
 
@@ -769,7 +769,7 @@ class TestExecutor(unittest.TestCase):
 
     def test_create_future_returns_future_with_executor_attached(self) -> None:
         self.assertIsNotNone(self.node.handle)
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
@@ -781,7 +781,7 @@ class TestExecutor(unittest.TestCase):
     def test_spinning_multiple_times_spin(self) -> None:
         self.assertIsNotNone(self.node.handle)
         # Test all executor types including base Executor class
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
@@ -809,7 +809,7 @@ class TestExecutor(unittest.TestCase):
     def test_spinning_multiple_times_spin_once(self) -> None:
         self.assertIsNotNone(self.node.handle)
         # Test all executor types including base Executor class
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
@@ -837,7 +837,7 @@ class TestExecutor(unittest.TestCase):
     def test_spinning_multiple_times_spin_until_future_complete(self) -> None:
         self.assertIsNotNone(self.node.handle)
         # Test all executor types including base Executor class
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
@@ -867,7 +867,7 @@ class TestExecutor(unittest.TestCase):
     def test_spinning_multiple_times_spin_once_until_future_complete(self) -> None:
         self.assertIsNotNone(self.node.handle)
         # Test all executor types including base Executor class
-        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
             with self.subTest(cls=cls):
                 executor = cls(context=self.context)
                 try:
