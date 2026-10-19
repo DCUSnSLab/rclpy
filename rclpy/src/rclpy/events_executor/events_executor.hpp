@@ -19,6 +19,7 @@
 #include <pybind11/pybind11.h>
 
 #include <rcl/client.h>
+#include <rcl/guard_condition.h>
 #include <rcl/service.h>
 #include <rcl/subscription.h>
 #include <rcl/timer.h>
@@ -50,6 +51,7 @@ namespace events_executor
 /// This executor implementation attempts to replicate the function of the rclcpp EventsExecutor
 /// for the benefit of rclpy applications.  It is implemented in C++ to minimize the overhead of
 /// processing the event loop.
+/// Guard condition callbacks observe rcl triggers only; rmw graph guard conditions are not collected.
 ///
 /// We assume all public methods could be invoked from any thread.  Callbacks on the executor loop
 /// will be issued on the thread that called one of the spin*() variants (ignoring any parallelism
@@ -85,6 +87,7 @@ private:
   struct WaitableSubEntities
   {
     std::vector<const rcl_subscription_t *> subscriptions;
+    std::vector<rcl_guard_condition_t *> guard_conditions;
     std::vector<rcl_timer_t *> timers;  // Can't be const
     std::vector<const rcl_client_t *> clients;
     std::vector<const rcl_service_t *> services;
@@ -108,6 +111,10 @@ private:
   void HandleRemovedSubscription(pybind11::handle);
   void HandleSubscriptionReady(pybind11::handle, size_t number_of_events);
 
+  void HandleAddedGuardCondition(pybind11::handle);
+  void HandleRemovedGuardCondition(pybind11::handle);
+  void HandleGuardConditionReady(pybind11::handle);
+
   void HandleAddedTimer(pybind11::handle);
   void HandleRemovedTimer(pybind11::handle);
   void HandleTimerReady(pybind11::handle);
@@ -126,6 +133,10 @@ private:
     pybind11::handle waitable, const rcl_subscription_t *,
     std::shared_ptr<rclpy::WaitSet> wait_set, size_t wait_set_sub_index,
     std::shared_ptr<ScopedWith> with_waitset, size_t number_of_events);
+  void HandleWaitableGuardReady(
+    pybind11::handle waitable, const rcl_guard_condition_t *,
+    std::shared_ptr<rclpy::WaitSet> wait_set, size_t wait_set_guard_index,
+    std::shared_ptr<ScopedWith> with_waitset);
   void HandleWaitableTimerReady(
     pybind11::handle waitable, const rcl_timer_t *, std::shared_ptr<rclpy::WaitSet> wait_set,
     size_t wait_set_timer_index, std::shared_ptr<ScopedWith> with_waitable,
@@ -179,6 +190,7 @@ private:
 
   // Collection of awaitable entities we're servicing
   pybind11::set subscriptions_;
+  pybind11::set guard_conditions_;
   pybind11::set timers_;
   pybind11::set clients_;
   pybind11::set services_;

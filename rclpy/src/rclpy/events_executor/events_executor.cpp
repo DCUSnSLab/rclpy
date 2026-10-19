@@ -36,6 +36,7 @@
 
 #include "client.hpp"
 #include "context.hpp"
+#include "guard_condition.hpp"
 #include "service.hpp"
 #include "subscription.hpp"
 
@@ -213,6 +214,7 @@ void EventsExecutor::UpdateEntitiesFromNodes(bool shutdown)
 
   // Collect all entities currently associated with our nodes
   py::set subscriptions;
+  py::set guard_conditions;
   py::set timers;
   py::set clients;
   py::set services;
@@ -220,16 +222,11 @@ void EventsExecutor::UpdateEntitiesFromNodes(bool shutdown)
   if (!shutdown) {
     for (py::handle node : nodes_) {
       subscriptions.attr("update")(py::set(node.attr("subscriptions")));
+      guard_conditions.attr("update")(py::set(node.attr("guards")));
       timers.attr("update")(py::set(node.attr("timers")));
       clients.attr("update")(py::set(node.attr("clients")));
       services.attr("update")(py::set(node.attr("services")));
       waitables.attr("update")(py::set(node.attr("waitables")));
-
-      // It doesn't seem to be possible to support guard conditions with a callback-based (as
-      // opposed to waitset-based) API.  Fortunately we don't seem to need to.
-      if (!py::set(node.attr("guards")).empty()) {
-        throw std::runtime_error("Guard conditions not supported");
-      }
     }
   } else {
     // Remove all tracked entities and nodes.
@@ -241,6 +238,10 @@ void EventsExecutor::UpdateEntitiesFromNodes(bool shutdown)
     subscriptions_, subscriptions,
     std::bind(&EventsExecutor::HandleAddedSubscription, this, pl::_1),
     std::bind(&EventsExecutor::HandleRemovedSubscription, this, pl::_1));
+  UpdateEntitySet(
+    guard_conditions_, guard_conditions,
+    std::bind(&EventsExecutor::HandleAddedGuardCondition, this, pl::_1),
+    std::bind(&EventsExecutor::HandleRemovedGuardCondition, this, pl::_1));
   UpdateEntitySet(
     timers_, timers, std::bind(&EventsExecutor::HandleAddedTimer, this, pl::_1),
     std::bind(&EventsExecutor::HandleRemovedTimer, this, pl::_1));
@@ -355,6 +356,54 @@ void EventsExecutor::HandleSubscriptionReady(py::handle subscription, size_t num
     } else {
       got_none = true;
     }
+  }
+}
+
+void EventsExecutor::HandleAddedGuardCondition(py::handle guard)
+{
+  py::handle handle = guard.attr("handle");
+  auto with = std::make_shared<ScopedWith>(handle);
+  rcl_guard_condition_t * rcl_ptr = py::cast<const GuardCondition &>(handle).rcl_ptr();
+  const auto cb = std::bind(&EventsExecutor::HandleGuardConditionReady, this, guard);
+  if (RCL_RET_OK != rcl_guard_condition_set_on_trigger_callback(
+      rcl_ptr, RclEventCallbackTrampoline,
+      rcl_callback_manager_.MakeCoalescingCallback(rcl_ptr, cb, with)))
+  {
+    throw std::runtime_error(
+      std::string("Failed to set the on trigger callback for guard condition: ") +
+      rcl_get_error_string().str);
+  }
+}
+
+void EventsExecutor::HandleRemovedGuardCondition(py::handle guard)
+{
+  rcl_guard_condition_t * rcl_ptr =
+    py::cast<const GuardCondition &>(guard.attr("handle")).rcl_ptr();
+  if (RCL_RET_OK != rcl_guard_condition_set_on_trigger_callback(rcl_ptr, nullptr, nullptr)) {
+    throw std::runtime_error(
+      std::string("Failed to clear the on trigger callback for guard condition: ") +
+      rcl_get_error_string().str);
+  }
+  rcl_callback_manager_.RemoveCallback(rcl_ptr);
+}
+
+void EventsExecutor::HandleGuardConditionReady(py::handle guard)
+{
+  py::gil_scoped_acquire gil_acquire;
+  const py::object callback = guard.attr("callback");
+  if (callback.is_none()) {
+    return;
+  }
+  try {
+    py::object result = callback();
+    if (py::cast<bool>(inspect_iscoroutine_(result))) {
+      create_task(result);
+    } else if (stop_after_user_callback_) {
+      events_queue_.Stop();
+    }
+  } catch (const py::error_already_set & e) {
+    HandleCallbackExceptionInNodeEntity(e, guard, "guards");
+    throw;
   }
 }
 
@@ -537,11 +586,9 @@ void EventsExecutor::HandleAddedWaitable(py::handle waitable)
   // component entities over their lifetimes.
   auto with_waitable = std::make_shared<ScopedWith>(waitable);
   const py::object num_entities = waitable.attr("get_num_entities")();
-  if (py::cast<size_t>(num_entities.attr("num_guard_conditions")) != 0) {
-    throw std::runtime_error("Guard conditions not supported");
-  }
   auto wait_set = std::make_shared<WaitSet>(
-    py::cast<size_t>(num_entities.attr("num_subscriptions")), 0U,
+    py::cast<size_t>(num_entities.attr("num_subscriptions")),
+    py::cast<size_t>(num_entities.attr("num_guard_conditions")),
     py::cast<size_t>(num_entities.attr("num_timers")),
     py::cast<size_t>(num_entities.attr("num_clients")),
     py::cast<size_t>(num_entities.attr("num_services")),
@@ -569,6 +616,23 @@ void EventsExecutor::HandleAddedWaitable(py::handle waitable)
     {
       throw std::runtime_error(
         std::string("Failed to set the on new message callback for Waitable subscription: ") +
+        rcl_get_error_string().str);
+    }
+  }
+  for (size_t i = 0; i < rcl_waitset->size_of_guard_conditions; ++i) {
+    rcl_guard_condition_t * const rcl_guard =
+      const_cast<rcl_guard_condition_t *>(rcl_waitset->guard_conditions[i]);
+    rcl_waitset->guard_conditions[i] = nullptr;
+    sub_entities.guard_conditions.push_back(rcl_guard);
+    const auto cb = std::bind(
+      &EventsExecutor::HandleWaitableGuardReady, this, waitable, rcl_guard, wait_set, i,
+      with_waitset);
+    if (RCL_RET_OK != rcl_guard_condition_set_on_trigger_callback(
+        rcl_guard, RclEventCallbackTrampoline,
+        rcl_callback_manager_.MakeCoalescingCallback(rcl_guard, cb, with_waitable)))
+    {
+      throw std::runtime_error(
+        std::string("Failed to set the on trigger callback for Waitable guard condition: ") +
         rcl_get_error_string().str);
     }
   }
@@ -659,6 +723,14 @@ void EventsExecutor::HandleRemovedWaitable(py::handle waitable)
     }
     rcl_callback_manager_.RemoveCallback(rcl_sub);
   }
+  for (rcl_guard_condition_t * const rcl_guard : sub_entities.guard_conditions) {
+    if (RCL_RET_OK != rcl_guard_condition_set_on_trigger_callback(rcl_guard, nullptr, nullptr)) {
+      throw std::runtime_error(
+        std::string("Failed to clear the on trigger callback for Waitable guard condition: ") +
+        rcl_get_error_string().str);
+    }
+    rcl_callback_manager_.RemoveCallback(rcl_guard);
+  }
   for (rcl_timer_t * const rcl_timer : sub_entities.timers) {
     timers_manager_.rcl_manager().RemoveTimer(rcl_timer);
   }
@@ -703,6 +775,17 @@ void EventsExecutor::HandleWaitableSubReady(
   HandleWaitableReady(waitable, wait_set, number_of_events);
   // Null out the wait set again so that other callbacks can use it on other objects.
   rcl_waitset->subscriptions[wait_set_sub_index] = nullptr;
+}
+
+void EventsExecutor::HandleWaitableGuardReady(
+  py::handle waitable, const rcl_guard_condition_t * rcl_guard, std::shared_ptr<WaitSet> wait_set,
+  size_t wait_set_guard_index, std::shared_ptr<ScopedWith>)
+{
+  py::gil_scoped_acquire gil_acquire;
+  rcl_wait_set_t * const rcl_waitset = wait_set->rcl_ptr();
+  rcl_waitset->guard_conditions[wait_set_guard_index] = rcl_guard;
+  HandleWaitableReady(waitable, wait_set, 1);
+  rcl_waitset->guard_conditions[wait_set_guard_index] = nullptr;
 }
 
 void EventsExecutor::HandleWaitableTimerReady(

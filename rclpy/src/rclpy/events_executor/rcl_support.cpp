@@ -14,6 +14,7 @@
 // limitations under the License.
 #include "events_executor/rcl_support.hpp"
 
+#include <atomic>
 #include <utility>
 
 namespace py = pybind11;
@@ -61,6 +62,34 @@ const void * RclCallbackManager::MakeCallback(
             return;
           }
           callback(number_of_events);
+      });
+    });
+  new_entry.with = with;
+  const void * ret = new_entry.cb.get();
+  owned_cbs_[key] = std::move(new_entry);
+  return ret;
+}
+
+const void * RclCallbackManager::MakeCoalescingCallback(
+  const void * key, std::function<void()> callback, std::shared_ptr<ScopedWith> with)
+{
+  if (owned_cbs_.count(key) != 0) {
+    throw py::key_error("Attempt to replace existing callback");
+  }
+  auto queued = std::make_shared<std::atomic<bool>>(false);
+  CbEntry new_entry;
+  new_entry.cb =
+    std::make_unique<std::function<void(size_t)>>([this, callback, key, queued](size_t) {
+        if (queued->exchange(true)) {
+          return;
+        }
+        events_queue_->Enqueue([this, callback, key, queued]() {
+          // Cleared before the call, so a trigger during the callback queues one more call.
+          queued->store(false);
+          if (!owned_cbs_.count(key)) {
+            return;
+          }
+          callback();
       });
     });
   new_entry.with = with;

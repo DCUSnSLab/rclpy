@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import threading
 import typing
 import unittest
 
@@ -23,10 +24,12 @@ import rclpy.duration
 import rclpy.event_handler
 import rclpy.executors
 import rclpy.experimental
+import rclpy.guard_condition
 import rclpy.node
 import rclpy.qos
 import rclpy.time
 import rclpy.timer
+from rclpy.waitable import NumberOfEntities, Waitable
 import rosgraph_msgs.msg
 import test_msgs.action
 import test_msgs.msg
@@ -402,6 +405,39 @@ rmw_matched_status_t = typing.Union[
 ]
 
 
+class GuardWaitable(Waitable):
+    """Expose a guard condition through the Waitable API."""
+
+    def __init__(self, node: rclpy.node.Node) -> None:
+        super().__init__(node.default_callback_group)
+        self.guard = rclpy.guard_condition.GuardCondition(
+            None, node.default_callback_group, context=node.context)
+        self.index = 0
+        self.executions = 0
+
+    def __enter__(self) -> 'GuardWaitable':
+        self.guard.handle.__enter__()
+        return self
+
+    def __exit__(self, *args: typing.Any) -> None:
+        self.guard.handle.__exit__(*args)
+
+    def get_num_entities(self) -> NumberOfEntities:
+        return NumberOfEntities(num_gcs=1)
+
+    def add_to_wait_set(self, wait_set: typing.Any) -> None:
+        self.index = wait_set.add_guard_condition(self.guard.handle)
+
+    def is_ready(self, wait_set: typing.Any) -> bool:
+        return bool(wait_set.is_ready('guard_condition', self.index))
+
+    def take_data(self) -> None:
+        return None
+
+    async def execute(self, taken_data: None) -> None:
+        self.executions += 1
+
+
 class TestEventsExecutor(unittest.TestCase):
 
     def setUp(self, *args, **kwargs) -> None:
@@ -484,6 +520,67 @@ class TestEventsExecutor(unittest.TestCase):
         assert res is not None
         self.assertEqual(res.bool_value, success)
         self.assertEqual(res.string_value, error_msg)
+
+    def test_guard_condition(self) -> None:
+        node = rclpy.create_node('guard_node')
+        calls: list[int] = []
+        guard = node.create_guard_condition(lambda: calls.append(1))
+        guard.trigger()
+        guard.trigger()
+        self.executor.add_node(node)
+        self.executor.spin_once(timeout_sec=1.0)
+        # Level-triggered like the wait set executors: triggers before a call merge into one.
+        self.assertEqual([1], calls)
+        self.executor.spin_once(timeout_sec=0.05)
+        self.assertEqual([1], calls)
+        thread = threading.Thread(target=guard.trigger)
+        thread.start()
+        self.executor.spin_once(timeout_sec=1.0)
+        thread.join()
+        self.assertEqual([1, 1], calls)
+        node.destroy_guard_condition(guard)
+        self.executor.spin_once(timeout_sec=0.0)
+
+    def test_guard_condition_coroutine(self) -> None:
+        node = rclpy.create_node('async_guard_node')
+        future = self.executor.create_future()
+
+        async def callback() -> None:
+            future.set_result(True)
+
+        guard = node.create_guard_condition(callback)
+        self.executor.add_node(node)
+        guard.trigger()
+        self._expect_future_done(future)
+
+    def test_guard_condition_without_callback(self) -> None:
+        node = rclpy.create_node('guard_without_callback')
+        guard = node.create_guard_condition(None)
+        self.executor.add_node(node)
+        guard.trigger()
+        self.executor.spin_once(timeout_sec=0.01)
+
+    def test_guard_condition_waitable(self) -> None:
+        node = rclpy.create_node('guard_waitable_node')
+        waitable = GuardWaitable(node)
+        node.add_waitable(waitable)
+        self.executor.add_node(node)
+        try:
+            waitable.guard.trigger()
+            waitable.guard.trigger()
+            self._spin_for(0.05)
+            self.assertEqual(1, waitable.executions)
+            waitable.guard.trigger()
+            self._spin_for(0.05)
+            self.assertEqual(2, waitable.executions)
+            node.remove_waitable(waitable)
+            self.executor.spin_once(timeout_sec=0.0)
+            waitable.guard.trigger()
+            self._spin_for(0.01)
+            self.assertEqual(2, waitable.executions)
+        finally:
+            self.executor.shutdown()
+            waitable.guard.destroy()
 
     def test_pub_sub(self) -> None:
         sub_node = SubTestNode()

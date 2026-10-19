@@ -54,6 +54,12 @@ public:
   const void * MakeCallback(
     const void * key, std::function<void(size_t)> callback, std::shared_ptr<ScopedWith> with);
 
+  /// Like MakeCallback(), but events arriving while one is already queued are merged into it, and
+  /// @p callback gets no count: a guard condition is level-triggered in the wait set executors,
+  /// which call its callback once however many triggers happened before they looked.
+  const void * MakeCoalescingCallback(
+    const void * key, std::function<void()> callback, std::shared_ptr<ScopedWith> with);
+
   /// Discard a previously constructed callback.  @p key should be the same value provided to
   /// MakeCallback().  Caution: ensure that RCL is no longer using a callback before invoking this.
   void RemoveCallback(const void * key);
