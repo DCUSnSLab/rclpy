@@ -159,3 +159,35 @@ def test_plain_subscription_dispatch():
         node.destroy_node()
         context.shutdown()
         context.destroy()
+
+
+def test_keep_all_messages_waiting_before_registration():
+    import time
+
+    from rclpy import create_node
+    from rclpy.context import Context
+    from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+    from test_msgs.msg import Empty
+
+    context = Context()
+    context.init()
+    node = create_node('executor_keep_all', context=context)
+    qos = QoSProfile(history=HistoryPolicy.KEEP_ALL, reliability=ReliabilityPolicy.RELIABLE)
+    received = []
+    node.create_subscription(Empty, 'executor_keep_all', lambda msg: received.append(msg), qos)
+    publisher = node.create_publisher(Empty, 'executor_keep_all', qos)
+    executor = RclExecutor(context=context)
+    try:
+        for _ in range(5):
+            publisher.publish(Empty())
+        time.sleep(0.5)
+        executor.add_node(node)
+        end = time.monotonic() + 2.
+        while len(received) < 5 and time.monotonic() < end:
+            executor.spin_once(timeout_sec=0.1)
+        assert len(received) == 5
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        context.shutdown()
+        context.destroy()
