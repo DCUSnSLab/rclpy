@@ -187,9 +187,10 @@ Subscription::take_message(py::object pymsg_type, bool raw)
     const void * data = nullptr;
     ret = rcl_take_ipc_message(subscription.get(), &owner, &data, &message_info);
     if (ret == RCL_RET_OK) {
-      std::unique_ptr<rcl_ipc_message_t, decltype(& rcl_ipc_message_release)> guard(
-        owner, rcl_ipc_message_release);
-      pytaken_msg = convert_to_py(const_cast<void *>(data), pymsg_type);
+      std::unique_ptr<void, destroy_ros_message_function *> guard(owner, [](void * value) {
+          rcl_ipc_message_release(static_cast<rcl_ipc_message_t *>(value));
+        });
+      pytaken_msg = convert_to_py_owned(const_cast<void *>(data), std::move(guard), pymsg_type);
     } else {
       auto taken_msg = create_from_py(pymsg_type);
 

@@ -86,6 +86,12 @@ py::object
 convert_to_py_owned(
   std::unique_ptr<void, destroy_ros_message_function *> message, py::object pyclass);
 
+/// Convert \p raw_message, which \p owner keeps alive, retaining owner for opt-in NumPy views.
+py::object
+convert_to_py_owned(
+  void * raw_message, std::unique_ptr<void, destroy_ros_message_function *> owner,
+  py::object pyclass);
+
 /// Return the identifier of the current rmw_implementation
 /**
  * \return string containing the identifier of the current rmw_implementation
