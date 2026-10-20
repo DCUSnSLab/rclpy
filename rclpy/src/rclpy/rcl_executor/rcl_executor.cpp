@@ -237,7 +237,8 @@ public:
   }
 
 private:
-  void call_plain(const py::object & subscription, const py::object & callback)
+  // By value: remove() may erase the plain_ entry while take_message releases the GIL.
+  void call_plain(py::object subscription, const py::object & callback)
   {
     auto & handle = subscription.attr("handle").cast<Subscription &>();
     py::object info = handle.take_message(subscription.attr("msg_type"),

@@ -134,6 +134,8 @@ public:
 private:
   Node node_;
   std::shared_ptr<rcl_subscription_t> rcl_subscription_;
+  // Whether the last successful take was long enough to release the GIL around the next one.
+  bool release_gil_ = false;
 };
 /// Define a pybind11 wrapper for an rclpy::Subscription
 void define_subscription(py::object module);

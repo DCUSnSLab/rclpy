@@ -22,6 +22,7 @@
 #include <rosidl_runtime_c/message_type_support_struct.h>
 #include <rmw/types.h>
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <stdexcept>
@@ -42,6 +43,10 @@ namespace rclpy
 {
 namespace
 {
+// Taking the GIL back waits up to one switch interval while another Python thread runs, which
+// costs more than a short take holds it, so only takes that last this long release it.
+constexpr auto kReleaseGilAfter = std::chrono::microseconds(100);
+
 std::vector<const char *>
 get_c_vector_string(const std::vector<std::string> & strings_in)
 {
@@ -133,12 +138,34 @@ void Subscription::destroy()
 py::object
 Subscription::take_message(py::object pymsg_type, bool raw)
 {
+  // The copy keeps the subscription alive if another thread destroys it while the GIL is released.
+  auto subscription = rcl_subscription_;
+  auto take = [this](auto && call) {
+      auto start = std::chrono::steady_clock::now();
+      std::chrono::steady_clock::time_point end;
+      rcl_ret_t ret;
+      if (release_gil_) {
+        py::gil_scoped_release release;
+        ret = call();
+        end = std::chrono::steady_clock::now();
+      } else {
+        ret = call();
+        end = std::chrono::steady_clock::now();
+      }
+      if (RCL_RET_OK == ret) {
+        release_gil_ = end - start >= kReleaseGilAfter;
+      }
+      return ret;
+    };
   py::object pytaken_msg;
   rmw_message_info_t message_info;
+  rcl_ret_t ret;
   if (raw) {
     SerializedMessage taken{rcutils_get_default_allocator()};
-    rcl_ret_t ret = rcl_take_serialized_message(
-      rcl_subscription_.get(), &taken.rcl_msg, &message_info, NULL);
+    ret = take([&] {
+          return rcl_take_serialized_message(
+            subscription.get(), &taken.rcl_msg, &message_info, NULL);
+        });
     if (RCL_RET_OK != ret) {
       if (RCL_RET_BAD_ALLOC == ret) {
         rcl_reset_error();
@@ -155,8 +182,9 @@ Subscription::take_message(py::object pymsg_type, bool raw)
   } else {
     auto taken_msg = create_from_py(pymsg_type);
 
-    rcl_ret_t ret = rcl_take(
-      rcl_subscription_.get(), taken_msg.get(), &message_info, NULL);
+    ret = take([&] {
+          return rcl_take(subscription.get(), taken_msg.get(), &message_info, NULL);
+        });
     if (RCL_RET_OK != ret) {
       if (RCL_RET_BAD_ALLOC == ret) {
         rcl_reset_error();
