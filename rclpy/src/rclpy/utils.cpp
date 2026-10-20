@@ -26,9 +26,12 @@
 #include <rmw/types.h>
 
 #include <cassert>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <rcpputils/scope_exit.hpp>
@@ -137,6 +140,41 @@ convert_to_py(void * message, py::object pyclass)
     throw py::error_already_set();
   }
   return py::reinterpret_steal<py::object>(convert(message));
+}
+
+py::object
+convert_to_py_owned(
+  std::unique_ptr<void, destroy_ros_message_function *> message, py::object pyclass)
+{
+  static const bool numpy_views = []() {
+      const char * setting = std::getenv("RCLPY_MESSAGE_ARRAYS");
+      return setting != nullptr && std::strcmp(setting, "numpy") == 0;
+    }();
+  if (!numpy_views) {
+    return convert_to_py(message.get(), pyclass);
+  }
+  auto metaclass = pyclass.attr("__class__");
+  if (!py::hasattr(metaclass, "_CONVERT_TO_PY_WITH_OWNER")) {
+    return convert_to_py(message.get(), pyclass);
+  }
+  auto capsule = metaclass.attr("_CONVERT_TO_PY_WITH_OWNER");
+  if (capsule.is_none()) {
+    return convert_to_py(message.get(), pyclass);
+  }
+  using Converter = PyObject * (*)(void *, PyObject *);
+  auto convert = reinterpret_cast<Converter>(static_cast<void *>(capsule.cast<py::capsule>()));
+  using Message = std::unique_ptr<void, destroy_ros_message_function *>;
+  void * raw_message = message.get();
+  auto holder = std::make_unique<Message>(std::move(message));
+  py::capsule owner(holder.get(), [](void * pointer) {
+      delete static_cast<Message *>(pointer);
+    });
+  holder.release();
+  PyObject * result = convert(raw_message, owner.ptr());
+  if (result == nullptr) {
+    throw py::error_already_set();
+  }
+  return py::reinterpret_steal<py::object>(result);
 }
 
 const char *

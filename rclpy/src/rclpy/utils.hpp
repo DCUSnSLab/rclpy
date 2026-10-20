@@ -81,6 +81,11 @@ convert_from_py(py::object pyclass);
 py::object
 convert_to_py(void * message, py::object pyclass);
 
+/// Convert a received message, retaining its storage for opt-in NumPy views.
+py::object
+convert_to_py_owned(
+  std::unique_ptr<void, destroy_ros_message_function *> message, py::object pyclass);
+
 /// Return the identifier of the current rmw_implementation
 /**
  * \return string containing the identifier of the current rmw_implementation

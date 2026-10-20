@@ -187,6 +187,6 @@ deserialize(py::bytes pybuffer, py::object pymsg_type)
     throw RMWError("failed to deserialize ROS message");
   }
 
-  return convert_to_py(deserialized_ros_msg.get(), pymsg_type);
+  return convert_to_py_owned(std::move(deserialized_ros_msg), pymsg_type);
 }
 }  // namespace rclpy

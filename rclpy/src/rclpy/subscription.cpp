@@ -27,6 +27,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <rcpputils/scope_exit.hpp>
@@ -196,7 +197,7 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       throw RCLError("failed to take message from subscription");
     }
 
-    pytaken_msg = convert_to_py(taken_msg.get(), pymsg_type);
+    pytaken_msg = convert_to_py_owned(std::move(taken_msg), pymsg_type);
   }
   py::object pub_seq_number = py::none();
   if (message_info.publication_sequence_number != RMW_MESSAGE_INFO_SEQUENCE_NUMBER_UNSUPPORTED) {
