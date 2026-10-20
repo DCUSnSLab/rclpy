@@ -894,6 +894,194 @@ class TestExecutor(unittest.TestCase):
                 finally:
                     executor.shutdown()
 
+    def test_task_exception_propagates_with_one_node(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                try:
+                    executor.add_node(self.node)
+
+                    def raises() -> None:
+                        raise RuntimeError('task failure')
+
+                    task = executor.create_task(raises)
+                    with self.assertRaises(RuntimeError):
+                        executor.spin_until_future_complete(task, timeout_sec=5)
+                finally:
+                    executor.shutdown()
+
+    def test_coroutine_exception_after_await(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                try:
+                    executor.add_node(self.node)
+                    first_fut = executor.create_future()
+                    second_fut = executor.create_future()
+
+                    async def coro_that_raises() -> None:
+                        first_fut.set_result(None)
+                        await second_fut
+                        raise RuntimeError('Expected error after await')
+
+                    task = executor.create_task(coro_that_raises)
+                    executor.spin_until_future_complete(first_fut, timeout_sec=5)
+                    self.assertFalse(task.done())
+                    second_fut.set_result(None)
+
+                    with self.assertRaises(RuntimeError) as cm:
+                        executor.spin_until_future_complete(task, timeout_sec=5)
+                    self.assertIn('Expected error after await', str(cm.exception))
+                finally:
+                    executor.shutdown()
+
+    def test_cancel_task_while_awaiting_future(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                try:
+                    executor.add_node(self.node)
+                    first_fut = executor.create_future()
+                    second_fut = executor.create_future()
+                    third_fut = executor.create_future()
+
+                    async def coro() -> None:
+                        first_fut.set_result(None)
+                        await second_fut
+                        third_fut.set_result(None)
+
+                    task = executor.create_task(coro)
+                    executor.spin_until_future_complete(first_fut, timeout_sec=5)
+                    self.assertFalse(task.done())
+                    task.cancel()
+                    self.assertTrue(task.cancelled())
+                    second_fut.set_result(None)
+
+                    executor.spin_until_future_complete(first_fut, timeout_sec=5)
+                    executor.spin_once(timeout_sec=0.1)
+                    self.assertFalse(third_fut.done())
+                finally:
+                    executor.shutdown()
+
+    def test_await_already_completed_future(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, EventsExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                try:
+                    executor.add_node(self.node)
+                    fut = executor.create_future()
+                    fut.set_result('done')
+
+                    async def coro() -> str:
+                        return await fut
+
+                    task = executor.create_task(coro)
+                    executor.spin_until_future_complete(task, timeout_sec=5)
+                    self.assertTrue(task.done())
+                    self.assertEqual('done', task.result())
+                finally:
+                    executor.shutdown()
+
+    def test_spin_until_future_complete_propagates_already_done_exception(self) -> None:
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                try:
+                    future = executor.create_future()
+                    future.set_exception(RuntimeError('pre-set exception'))
+                    with self.assertRaises(RuntimeError) as cm:
+                        executor.spin_until_future_complete(future, timeout_sec=1)
+                    self.assertIn('pre-set exception', str(cm.exception))
+                finally:
+                    executor.shutdown()
+
+    def test_spin_until_future_complete_raises_exception_set_at_timeout(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                future = executor.create_future()
+
+                def set_exception_and_outlast_timeout() -> None:
+                    if not future.done():
+                        future.set_exception(RuntimeError('set at timeout'))
+                        time.sleep(0.3)
+
+                tmr = self.node.create_timer(0.01, set_exception_and_outlast_timeout)
+                try:
+                    executor.add_node(self.node)
+                    with self.assertRaises(RuntimeError):
+                        executor.spin_until_future_complete(future, timeout_sec=0.2)
+                finally:
+                    self.node.destroy_timer(tmr)
+                    executor.shutdown()
+
+    def test_waiting_on_future_registers_one_wake_callback(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor]:
+            with self.subTest(cls=cls):
+                executor = cls(context=self.context)
+                try:
+                    executor.add_node(self.node)
+                    future = executor.create_future()
+                    for _ in range(10):
+                        executor.spin_once_until_future_complete(future, timeout_sec=0)
+                        executor.spin_until_future_complete(future, timeout_sec=0)
+                    self.assertEqual(1, len(future._callbacks))
+                finally:
+                    executor.shutdown()
+
+    def test_multi_threaded_executor_tracks_resumed_task_once(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        executor = MultiThreadedExecutor(context=self.context)
+        try:
+            executor.add_node(self.node)
+            first_gate = executor.create_future()
+            second_gate = executor.create_future()
+
+            async def waiter() -> None:
+                await first_gate
+                await second_gate
+
+            task = executor.create_task(waiter)
+            executor.spin_once(timeout_sec=1)
+            first_gate.set_result(None)
+            executor.spin_once(timeout_sec=1)
+            time.sleep(0.1)
+            self.assertFalse(task.done())
+            self.assertEqual(1, executor._futures.count(task))
+            second_gate.set_result(None)
+            executor.spin_until_future_complete(task, timeout_sec=1)
+        finally:
+            executor.shutdown()
+
+    def test_multi_threaded_executor_drops_cancelled_handlers(self) -> None:
+        self.assertIsNotNone(self.node.handle)
+        executor = MultiThreadedExecutor(context=self.context)
+        try:
+            executor.add_node(self.node)
+            gate = executor.create_future()
+
+            async def waiter() -> None:
+                await gate
+
+            task = executor.create_task(waiter)
+            executor.spin_once(timeout_sec=1)
+            time.sleep(0.1)
+            task.cancel()
+            gate.set_result(None)
+            for _ in range(3):
+                executor.spin_until_future_complete(
+                    executor.create_task(lambda: None), timeout_sec=1)
+                time.sleep(0.1)
+            self.assertNotIn(task, executor._futures)
+        finally:
+            executor.shutdown()
+
 
 if __name__ == '__main__':
     unittest.main()

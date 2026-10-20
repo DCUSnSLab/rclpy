@@ -369,7 +369,7 @@ class Executor(ContextManager['Executor']):
         # Mark executor as spinning to prevent concurrent spins
         self._enter_spin()
         # Make sure the future wakes this executor when it is done
-        future.add_done_callback(lambda x: self.wake())
+        self._add_wake_on_done(future)
         try:
             if timeout_sec is None or timeout_sec < 0:
                 while (
@@ -394,12 +394,25 @@ class Executor(ContextManager['Executor']):
                     now = time.monotonic()
 
                     if now >= end:
-                        self._exit_spin()
-                        return
+                        break
 
                     timeout_left.timeout = end - now
         finally:
             self._exit_spin()
+
+        # MultiThreadedExecutor runs the handler on a worker thread, so the loop can see the
+        # future done before any spin re-raised its exception.
+        if future.done():
+            exc = future.exception()
+            if exc is not None:
+                raise exc
+
+    def _wake_on_done(self, future: Future) -> None:
+        self.wake()
+
+    def _add_wake_on_done(self, future: Future) -> None:
+        # Bound methods compare equal, so repeated waits on one future register one callback.
+        future.add_done_callback(self._wake_on_done, unique=True)
 
     def spin_once(self, timeout_sec: Optional[float] = None) -> None:
         """
@@ -661,6 +674,10 @@ class Executor(ContextManager['Executor']):
                 ready_tasks_count = len(self._ready_tasks)
             for _ in range(ready_tasks_count):
                 task = self._ready_tasks.popleft()
+                # A task cancelled or finished while awaiting a future is still rescheduled
+                # when that future completes.
+                if task.cancelled() or task.done():
+                    continue
                 task_data = self._pending_tasks[task]
                 node = task_data.source_node
                 if node is None or node in nodes_to_use:
@@ -947,7 +964,7 @@ class SingleThreadedExecutor(Executor):
     ) -> None:
         # Mark executor as spinning to prevent concurrent spins
         self._enter_spin()
-        future.add_done_callback(lambda x: self.wake())
+        self._add_wake_on_done(future)
         try:
             self._spin_once_until_future_complete(future, timeout_sec)
         finally:
@@ -1006,11 +1023,13 @@ class MultiThreadedExecutor(Executor):
             pass
         else:
             self._executor.submit(handler)
-            self._futures.append(handler)
+            # A task resumed after awaiting a future is dispatched again as the same handler.
+            if handler not in self._futures:
+                self._futures.append(handler)
             # make a copy of the list that we iterate over while modifying it
             # (https://stackoverflow.com/q/1207406/3753684)
             for future in self._futures[:]:
-                if future.done():
+                if future.done() or future.cancelled():
                     self._futures.remove(future)
                     future.result()  # raise any exceptions
 
@@ -1039,7 +1058,7 @@ class MultiThreadedExecutor(Executor):
     ) -> None:
         # Mark executor as spinning to prevent concurrent spins
         self._enter_spin()
-        future.add_done_callback(lambda x: self.wake())
+        self._add_wake_on_done(future)
         try:
             self._spin_once_until_future_complete(future, timeout_sec)
         finally:

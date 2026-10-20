@@ -157,10 +157,18 @@ class Future:
         if executor is not None:
             # Have the executor take care of the callbacks
             for callback in callbacks:
-                executor.create_task(callback, self)
+                if isinstance(callback, Task):
+                    executor._call_task_in_next_spin(callback)
+                else:
+                    executor.create_task(callback, self)
         else:
             # No executor, call right away
             for callback in callbacks:
+                if isinstance(callback, Task):
+                    warnings.warn(
+                        'Dropping task awaiting future: '
+                        'executor reference could not be resolved')
+                    continue
                 try:
                     callback(self)
                 except Exception as e:
@@ -175,7 +183,7 @@ class Future:
             else:
                 self._executor = weakref.ref(executor)
 
-    def add_done_callback(self, callback):
+    def add_done_callback(self, callback, *, unique=False):
         """
         Add a callback to be executed when the task is done.
 
@@ -185,9 +193,12 @@ class Future:
         If this happens and the callback raises, the exception will be raised by this method.
 
         :param callback: a callback taking the future as an argument to be run when completed
+        :param unique: only add the callback if it is not already pending
         """
         invoke = False
         with self._lock:
+            if unique and callback in self._callbacks:
+                return
             if not self._pending():
                 executor = self._executor()
                 if executor is not None:
@@ -200,6 +211,20 @@ class Future:
         # Invoke when not holding self._lock
         if invoke:
             callback(self)
+
+    def _add_waiting_task(self, task: 'Task') -> None:
+        """Schedule a task to resume when this future completes."""
+        with self._lock:
+            if not self._pending():
+                executor = self._executor()
+                if executor is not None:
+                    executor._call_task_in_next_spin(task)
+                else:
+                    warnings.warn(
+                        'Dropping task awaiting future: '
+                        'executor reference could not be resolved')
+            else:
+                self._callbacks.append(task)
 
     def remove_done_callback(self, callback: Callable[['Future'], None]) -> bool:
         """
@@ -317,9 +342,7 @@ class Task(Future):
         elif future_executor is not executor:
             raise RuntimeError('A task can only await futures associated with the same executor')
 
-        # The future is associated with the same executor, so we can resume the task directly
-        # in the done callback
-        future.add_done_callback(lambda _: self.__call__())
+        future._add_waiting_task(self)
 
     def _complete_task(self) -> None:
         """Cleanup after task finished."""
