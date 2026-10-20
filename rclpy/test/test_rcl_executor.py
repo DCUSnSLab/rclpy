@@ -191,3 +191,31 @@ def test_keep_all_messages_waiting_before_registration():
         node.destroy_node()
         context.shutdown()
         context.destroy()
+
+
+def test_selection_policy_priority():
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.context import Context
+    from rclpy.experimental import SelectionPolicy
+    from rclpy.node import Node
+
+    context = Context()
+    context.init()
+    executor = RclExecutor(context=context, selection_policy=SelectionPolicy.PRIORITY)
+    node = Node('priority_policy', context=context)
+    low, high = MutuallyExclusiveCallbackGroup(), MutuallyExclusiveCallbackGroup()
+    sequence = []
+    timers = []
+    for name, group in [('low', low), ('high', high)]:
+        timer = node.create_timer(0.001, lambda n=name: sequence.append(n), callback_group=group)
+        timers.append(timer)
+    executor.add_node(node)
+    executor.set_group_priority(low, -1)
+    executor.set_group_priority(high, 10)
+    import time
+    time.sleep(0.01)
+    executor.spin_once(timeout_sec=0)
+    assert sequence == ['high']
+    executor.shutdown()
+    node.destroy_node()
+    context.shutdown()

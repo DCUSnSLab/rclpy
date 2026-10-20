@@ -7,6 +7,7 @@
 # specific language governing permissions and limitations under the License.
 
 from contextlib import ExitStack
+from enum import IntEnum
 import inspect
 import time
 from typing import Callable, Dict, List, Optional, Union
@@ -95,11 +96,20 @@ class _DirectCall:
             raise self._exception
 
 
+class SelectionPolicy(IntEnum):
+    """Selection order for the shared scheduler."""
+
+    FIFO = 0
+    WAIT_SET = 1
+    PRIORITY = 2
+
+
 class RclExecutor(SingleThreadedExecutor):
     """Execute Python tasks using the shared rcl event scheduler."""
 
-    def __init__(self, *, context: Optional[Context] = None):
-        self._core = _rclpy.RclExecutorCore()
+    def __init__(self, *, context: Optional[Context] = None,
+                 selection_policy: SelectionPolicy = SelectionPolicy.FIFO):
+        self._core = _rclpy.RclExecutorCore(int(SelectionPolicy(selection_policy)))
         self._entities: Dict = {}
         self._dirty = True
         self._selected_nodes = ()
@@ -108,6 +118,11 @@ class RclExecutor(SingleThreadedExecutor):
         super().__init__(context=context)
         self._internal = [self._core.add(5, guard.handle, 0, 0)
                           for guard in [self._guard, self._sigint_gc]]
+
+    def set_group_priority(self, group, priority: int) -> None:
+        """Set a callback group's integer priority; larger values run first."""
+        self._core.add_group(id(group), isinstance(group, ReentrantCallbackGroup))
+        self._core.set_group_priority(id(group), priority)
 
     def remove_node(self, node) -> None:
         """Remove a node and detach its readiness callbacks before it can move."""

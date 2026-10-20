@@ -51,9 +51,10 @@ class RclExecutorCore
   std::unordered_map<uint64_t, std::pair<py::object, py::object>> plain_;
 
 public:
-  RclExecutorCore()
+  explicit RclExecutorCore(int policy)
   {
-    checked(rcl_executor_create(&core_));
+    checked(rcl_executor_create_with_policy(
+        &core_, static_cast<rcl_executor_selection_policy_t>(policy)));
     handle_ = rcl_executor_get_handle(core_);
     signal_ = std::make_unique<ScopedSignalCallback>([this] {rcl_executor_wake(handle_);});
   }
@@ -79,6 +80,10 @@ public:
   {
     checked(rcl_executor_add_group(core_, id,
       reentrant ? RCL_EXECUTOR_REENTRANT : RCL_EXECUTOR_MUTUALLY_EXCLUSIVE));
+  }
+  void priority(uint64_t id, int32_t value)
+  {
+    checked(rcl_executor_set_group_priority(core_, id, value));
   }
   uint64_t add_raw(int type, const void * pointer, uintptr_t context, uint64_t group_id)
   {
@@ -235,7 +240,8 @@ public:
 void define_rcl_executor(py::module_ & module)
 {
   py::class_<RclExecutorCore>(module, "RclExecutorCore")
-  .def(py::init<>())
+  .def(py::init<int>(), py::arg("selection_policy") = 0)
+  .def("set_group_priority", &RclExecutorCore::priority)
   .def("add_group", &RclExecutorCore::group)
   .def("add", &RclExecutorCore::add)
   .def("add_waitable", &RclExecutorCore::add_waitable)
