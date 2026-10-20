@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "context.hpp"
@@ -50,6 +51,27 @@ void shutdown_contexts()
     (void)ret;
   }
   g_contexts.clear();
+}
+
+namespace
+{
+struct BorrowedContext
+{
+  std::shared_ptr<rcl_context_t> lease;
+  void operator()(rcl_context_t *) const {}
+};
+}
+
+Context::Context(py::capsule lease)
+{
+  if (std::string(lease.name()) != "rcl_context_shared_ptr") {
+    throw py::value_error("expected a shared rcl context lease");
+  }
+  auto owner = *static_cast<std::shared_ptr<rcl_context_t> *>(lease.get_pointer());
+  if (!owner || !rcl_context_is_valid(owner.get())) {
+    throw py::value_error("context lease is not live");
+  }
+  rcl_context_ = std::shared_ptr<rcl_context_t>(owner.get(), BorrowedContext{owner});
 }
 
 Context::Context(py::list pyargs, size_t domain_id)
@@ -150,6 +172,9 @@ Context::ok()
 void
 Context::shutdown()
 {
+  if (std::get_deleter<BorrowedContext>(rcl_context_)) {
+    throw std::runtime_error("the embedding container owns context shutdown");
+  }
   {
     std::lock_guard<std::mutex> guard{g_contexts_mutex};
     auto iter = std::find(g_contexts.begin(), g_contexts.end(), rcl_context_.get());
@@ -168,6 +193,7 @@ void define_context(py::object module)
 {
   py::class_<Context, Destroyable, std::shared_ptr<Context>>(module, "Context")
   .def(py::init<py::list, size_t>())
+  .def(py::init<py::capsule>())
   .def_property_readonly(
     "pointer", [](const Context & context) {
       return reinterpret_cast<size_t>(context.rcl_ptr());

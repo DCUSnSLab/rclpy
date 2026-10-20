@@ -72,6 +72,9 @@ public:
    */
   Context(py::list pyargs, size_t domain_id);
 
+  /// Borrow a container-owned context through a shared context lease.
+  explicit Context(py::capsule lease);
+
   /// Retrieves domain id from init_options of context
   /**
    * \param[in] pycontext Capsule containing rcl_context_t

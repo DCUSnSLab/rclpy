@@ -1645,6 +1645,8 @@ class Node:
             self._validate_topic_or_service_name(topic)
 
         try:
+            if raw:
+                subscription_object.disable_ipc()
             subscription = Subscription(
                 subscription_object, msg_type,
                 topic, callback, callback_group, qos_profile, raw,

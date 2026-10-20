@@ -32,6 +32,8 @@
 
 #include <rcpputils/scope_exit.hpp>
 
+#include "rcl/intra_process.h"
+
 #include "exceptions.hpp"
 #include "node.hpp"
 #include "serialization.hpp"
@@ -181,23 +183,32 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       reinterpret_cast<const char *>(taken.rcl_msg.buffer),
       taken.rcl_msg.buffer_length);
   } else {
-    auto taken_msg = create_from_py(pymsg_type);
+    rcl_ipc_message_t * owner = nullptr;
+    const void * data = nullptr;
+    ret = rcl_take_ipc_message(subscription.get(), &owner, &data, &message_info);
+    if (ret == RCL_RET_OK) {
+      std::unique_ptr<rcl_ipc_message_t, decltype(& rcl_ipc_message_release)> guard(
+        owner, rcl_ipc_message_release);
+      pytaken_msg = convert_to_py(const_cast<void *>(data), pymsg_type);
+    } else {
+      auto taken_msg = create_from_py(pymsg_type);
 
-    ret = take([&] {
-          return rcl_take(subscription.get(), taken_msg.get(), &message_info, NULL);
+      ret = take([&] {
+            return rcl_take(subscription.get(), taken_msg.get(), &message_info, NULL);
         });
-    if (RCL_RET_OK != ret) {
-      if (RCL_RET_BAD_ALLOC == ret) {
-        rcl_reset_error();
-        throw std::bad_alloc();
+      if (RCL_RET_OK != ret) {
+        if (RCL_RET_BAD_ALLOC == ret) {
+          rcl_reset_error();
+          throw std::bad_alloc();
+        }
+        if (RCL_RET_SUBSCRIPTION_TAKE_FAILED == ret) {
+          return py::none();
+        }
+        throw RCLError("failed to take message from subscription");
       }
-      if (RCL_RET_SUBSCRIPTION_TAKE_FAILED == ret) {
-        return py::none();
-      }
-      throw RCLError("failed to take message from subscription");
-    }
 
-    pytaken_msg = convert_to_py_owned(std::move(taken_msg), pymsg_type);
+      pytaken_msg = convert_to_py_owned(std::move(taken_msg), pymsg_type);
+    }
   }
   py::object pub_seq_number = py::none();
   if (message_info.publication_sequence_number != RMW_MESSAGE_INFO_SEQUENCE_NUMBER_UNSUPPORTED) {
@@ -341,6 +352,7 @@ define_subscription(py::object module)
     py::arg("topic"),
     py::arg("qos_profile"),
     py::arg("content_filter_options") = py::none())
+  .def("disable_ipc", [](Subscription & sub) {rcl_subscription_disable_ipc(sub.rcl_ptr());})
   .def_property_readonly(
     "pointer", [](const Subscription & subscription) {
       return reinterpret_cast<size_t>(subscription.rcl_ptr());

@@ -77,11 +77,14 @@ class Context(ContextManager['Context']):
              args: Optional[List[str]] = None,
              *,
              initialize_logging: bool = True,
-             domain_id: Optional[int] = None) -> None:
+             domain_id: Optional[int] = None,
+             context_lease=None) -> None:
         """
         Initialize ROS communications for a given context.
 
         :param args: List of command line arguments.
+        :param context_lease: Optional container-owned shared rcl context capsule.
+            The container retains shutdown authority.
         """
         # imported locally to avoid loading extensions on module import
         from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
@@ -96,9 +99,14 @@ class Context(ContextManager['Context']):
             if self.__context is not None:
                 raise RuntimeError('Context.init() must only be called once')
 
-            self.__context = _rclpy.Context(
-                args if args is not None else sys.argv,
-                domain_id if domain_id is not None else _rclpy.RCL_DEFAULT_DOMAIN_ID)
+            if context_lease is not None:
+                if args is not None or domain_id is not None:
+                    raise ValueError('A borrowed context already has arguments and a domain')
+                self.__context = _rclpy.Context(context_lease)
+            else:
+                self.__context = _rclpy.Context(
+                    args if args is not None else sys.argv,
+                    domain_id if domain_id is not None else _rclpy.RCL_DEFAULT_DOMAIN_ID)
             if initialize_logging and not self._logging_initialized:
                 with g_logging_configure_lock:
                     g_logging_ref_count += 1

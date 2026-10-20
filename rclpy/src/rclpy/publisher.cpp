@@ -21,6 +21,9 @@
 
 #include <memory>
 #include <string>
+#include <utility>
+
+#include "rcl/intra_process.h"
 
 #include "exceptions.hpp"
 #include "node.hpp"
@@ -127,7 +130,14 @@ Publisher::publish(py::object pymsg)
     throw py::error_already_set();
   }
 
-  rcl_ret_t ret = rcl_publish(rcl_publisher_.get(), raw_ros_message.get(), NULL);
+  rcl_ret_t ret;
+  if (rcl_publisher_is_ipc_enabled(rcl_publisher_.get())) {
+    auto owner = new decltype(raw_ros_message)(std::move(raw_ros_message));
+    ret = rcl_publish_ipc_owned(rcl_publisher_.get(), owner->get(),
+        [](void * value) {delete static_cast<decltype(owner)>(value);}, owner);
+  } else {
+    ret = rcl_publish(rcl_publisher_.get(), raw_ros_message.get(), NULL);
+  }
   if (RCL_RET_OK != ret) {
     throw RCLError("Failed to publish");
   }
