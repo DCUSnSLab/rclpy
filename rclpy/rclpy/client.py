@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from functools import partial
 import threading
 import time
 from typing import Dict
@@ -131,7 +132,7 @@ class Client:
             future = Future()
             self._pending_requests[sequence_number] = future
 
-            future.add_done_callback(self.remove_pending_request)
+            future.add_done_callback(partial(self._remove_pending_request, sequence_number))
 
         return future
 
@@ -159,6 +160,12 @@ class Client:
                 if future is req_future:
                     del self._pending_requests[seq]
                     break
+
+    def _remove_pending_request(self, sequence_number: int, future: Future) -> None:
+        with self._lock:
+            # A delayed callback must not remove a newer request with the same sequence number.
+            if self._pending_requests.get(sequence_number) is future:
+                del self._pending_requests[sequence_number]
 
     def service_is_ready(self) -> bool:
         """

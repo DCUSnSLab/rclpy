@@ -17,6 +17,7 @@ import threading
 import time
 import traceback
 import unittest
+from unittest.mock import MagicMock
 
 from rcl_interfaces.srv import GetParameters
 import rclpy
@@ -30,6 +31,61 @@ TIME_FUDGE = 0.3
 
 
 class TestClient(unittest.TestCase):
+
+    def test_pending_request_callback_sequence_reuse(self):
+        handle = MagicMock()
+        handle.send_request.return_value = 7
+        cli = rclpy.client.Client(
+            self.context, handle, Empty, 'sequence_reuse', None, None)
+        first = cli.call_async(Empty.Request())
+        cli.remove_pending_request(first)
+        second = cli.call_async(Empty.Request())
+        first.set_result(Empty.Response())
+        self.assertIs(cli.get_pending_request(7), second)
+        second.set_result(Empty.Response())
+        self.assertEqual(cli._pending_requests, {})
+
+    def test_pending_request_callbacks_do_not_scan(self):
+        class PendingRequests(dict):
+            def items(self):
+                raise AssertionError('Completion must not scan pending requests')
+
+        handle = MagicMock()
+        handle.send_request.side_effect = range(4)
+        cli = rclpy.client.Client(
+            self.context, handle, Empty, 'pending_callbacks', None, None)
+        cli._pending_requests = PendingRequests()
+        futures = [cli.call_async(Empty.Request()) for _ in range(4)]
+        futures[2].set_result(Empty.Response())
+        futures[0].cancel()
+        futures[3].set_exception(RuntimeError('request failed'))
+        self.assertIsInstance(futures[3].exception(), RuntimeError)
+        self.assertEqual(list(cli._pending_requests), [1])
+        futures[1].set_result(Empty.Response())
+        self.assertEqual(cli._pending_requests, {})
+
+    def test_pending_requests_with_core_executor(self):
+        from rclpy.experimental import RclExecutor
+        from rclpy.qos import QoSProfile
+
+        qos = QoSProfile(depth=128)
+        cli = self.node.create_client(Empty, 'core_pending_requests', qos_profile=qos)
+        srv = self.node.create_service(
+            Empty, 'core_pending_requests', lambda request, response: response, qos_profile=qos)
+        executor = RclExecutor(context=self.context)
+        executor.add_node(self.node)
+        try:
+            self.assertTrue(cli.wait_for_service(timeout_sec=5))
+            futures = [cli.call_async(Empty.Request()) for _ in range(100)]
+            deadline = time.monotonic() + 10
+            while cli._pending_requests and time.monotonic() < deadline:
+                executor.spin_once(timeout_sec=0.1)
+            self.assertEqual(cli._pending_requests, {})
+            self.assertTrue(all(future.result() is not None for future in futures))
+        finally:
+            executor.shutdown()
+            self.node.destroy_client(cli)
+            self.node.destroy_service(srv)
 
     @classmethod
     def setUpClass(cls):
