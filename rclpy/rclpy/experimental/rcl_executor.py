@@ -9,6 +9,7 @@
 from contextlib import ExitStack
 from enum import IntEnum
 import inspect
+import threading
 import time
 from typing import Callable, Dict, List, Optional, Union
 
@@ -108,8 +109,18 @@ class RclExecutor(SingleThreadedExecutor):
     """Execute Python tasks using the shared rcl event scheduler."""
 
     def __init__(self, *, context: Optional[Context] = None,
-                 selection_policy: SelectionPolicy = SelectionPolicy.FIFO):
+                 selection_policy: Optional[SelectionPolicy] = None,
+                 partitioned: bool = False, on_thread_start: Optional[Callable] = None):
+        if selection_policy is None:
+            selection_policy = SelectionPolicy.WAIT_SET if partitioned else SelectionPolicy.FIFO
+        self._partitioned = partitioned
+        self._on_thread_start = on_thread_start
+        self._partition_running = False
+        self._partition_stopping = False
+        self._groups = {}
+        self._resuming = {}
         self._core = _rclpy.RclExecutorCore(int(SelectionPolicy(selection_policy)))
+        self._core.set_partitioned(partitioned)
         self._entities: Dict = {}
         self._dirty = True
         self._selected_nodes = ()
@@ -118,6 +129,87 @@ class RclExecutor(SingleThreadedExecutor):
         super().__init__(context=context)
         self._internal = [self._core.add(5, guard.handle, 0, 0)
                           for guard in [self._guard, self._sigint_gc]]
+
+    def add_node(self, node):
+        """Associate a node, refusing Reentrant groups in partition mode."""
+        if self._partitioned:
+            entities = [*node.subscriptions, *node.timers, *node.services, *node.clients,
+                        *node.guards, *node.waitables]
+            if any(isinstance(e.callback_group, ReentrantCallbackGroup) for e in entities):
+                raise ValueError('partition mode refuses Reentrant callback groups')
+        return super().add_node(node)
+
+    def on_thread_start(self, callback):
+        """Set the callback receiving a worker index and its group (or None)."""
+        if self._partition_running:
+            raise RuntimeError('executor is spinning')
+        self._on_thread_start = callback
+
+    def _stop_partitions(self):
+        self._partition_stopping = True
+        self._core.stop()
+        for event in list(self._resuming.values()):
+            event.set()
+
+    def _thread_started(self, index, group):
+        try:
+            if self._on_thread_start is not None:
+                self._on_thread_start(index, self._groups.get(group))
+        except BaseException:
+            self._stop_partitions()
+            raise
+
+    def _partition_sync(self):
+        self._collect(self.get_nodes())
+        with self._tasks_lock:
+            ready = list(self._ready_tasks)
+            self._ready_tasks.clear()
+            for task in list(self._pending_tasks):
+                if task.done() or task.cancelled():
+                    del self._pending_tasks[task]
+        for task in ready:
+            if not task.done() and not task.cancelled():
+                self._core.post(task)
+
+    def _partition_execute(self, item):
+        try:
+            self._partition_dispatch(item)
+        except BaseException:
+            self._stop_partitions()
+            raise
+
+    def _partition_dispatch(self, item):
+        if self._is_shutdown or not self._context.ok():
+            self._stop_partitions()
+            return
+        key, _, kind = item
+        if kind == 6:
+            task = key if isinstance(key, Task) else Task(key, executor=self)
+            task()
+            if task.done():
+                task.result()
+            return
+        elif key == 0:
+            self._partition_sync()
+            return
+        elif key in self._entities:
+            entity, node, waitset, _, _ = self._entities[key]
+            task = self._claimed_handler(entity, node, waitset, None, kind)
+        else:
+            return
+        event = threading.Event()
+        self._resuming[task] = event
+        try:
+            while not self._is_shutdown and not self._partition_stopping:
+                event.clear()
+                task()
+                if task.done() or task.cancelled():
+                    task.result()
+                    return
+                event.wait()
+            task.cancel()
+        finally:
+            del self._resuming[task]
 
     def set_group_priority(self, group, priority: int) -> None:
         """Set a callback group's integer priority; larger values run first."""
@@ -136,6 +228,8 @@ class RclExecutor(SingleThreadedExecutor):
         """Recollect entities and interrupt the current wait."""
         self._dirty = True
         self._core.wake()
+        if self._partition_running:
+            self._core.post(self._partition_sync)
 
     def post(self, callback, *args, **kwargs) -> Task:
         """Post language work to the core and return its Task."""
@@ -146,6 +240,13 @@ class RclExecutor(SingleThreadedExecutor):
         return task
 
     def _call_task_in_next_spin(self, task: Task) -> None:
+        event = self._resuming.get(task)
+        if event is not None:
+            event.set()
+            return
+        if self._partition_running:
+            self._core.post(task)
+            return
         with self._tasks_lock:
             self._ready_tasks.append(task)
         self._core.wake()
@@ -172,6 +273,11 @@ class RclExecutor(SingleThreadedExecutor):
         for key in list(self._entities):
             if key not in desired:
                 self._remove_entity(key)
+        groups = {id(entity.callback_group): entity.callback_group
+                  for entity, _, _ in desired.values()}
+        for key in self._groups.keys() - groups.keys():
+            self._core.remove_group(key)
+        self._groups = groups
         for key, (entity, node, kind) in desired.items():
             if key in self._entities:
                 continue
@@ -304,6 +410,15 @@ class RclExecutor(SingleThreadedExecutor):
         """Execute callbacks until shutdown, running plain subscription callbacks in batches."""
         self._enter_spin()
         try:
+            if self._partitioned:
+                self._partition_sync()
+                self._partition_running = True
+                try:
+                    self._core.spin(self._partition_execute, self._thread_started)
+                finally:
+                    self._partition_running = False
+                return
+            self._thread_started(0, 0)
             while self._context.ok() and not self._is_shutdown:
                 self._spin_once_impl(batch=64)
         finally:
@@ -313,6 +428,8 @@ class RclExecutor(SingleThreadedExecutor):
         self, timeout_sec: Optional[Union[float, TimeoutObject]] = None,
         wait_condition: Callable[[], bool] = lambda: False, batch: int = 1,
     ) -> None:
+        if self._partitioned:
+            raise RuntimeError('partition mode requires spin()')
         if self._claimed_item is None and not (
                 self._is_shutdown or self._dirty or self._ready_tasks or wait_condition()):
             with self._work_tracker:
@@ -325,6 +442,8 @@ class RclExecutor(SingleThreadedExecutor):
         """Stop dispatch and cancel suspended tasks, releasing their groups."""
         self._is_shutdown = True
         self._core.stop()
+        for event in list(self._resuming.values()):
+            event.set()
         with self._tasks_lock:
             tasks = list(self._pending_tasks)
         for task in tasks:

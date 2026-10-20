@@ -9,6 +9,7 @@
 #include <pybind11/pybind11.h>
 #include <rcl_executor/executor.h>
 #include <rcl/error_handling.h>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -73,6 +74,40 @@ public:
     plain_.clear();
     lifetimes_.clear();
     posted_.clear();
+  }
+  void partitioned(bool value) {checked(rcl_executor_set_partitioned(core_, value));}
+  void remove_group(uint64_t id) {checked(rcl_executor_remove_group(core_, id));}
+  void spin(py::object dispatch, py::object start)
+  {
+    struct Driver
+    {
+      RclExecutorCore * self;
+      py::object dispatch;
+      py::object start;
+      std::exception_ptr error;
+      void fail()
+      {
+        if (!error) {error = std::current_exception();}
+        self->stop();
+      }
+    } driver{this, dispatch, start, nullptr};
+    checked(rcl_executor_set_thread_start(core_, [](size_t index, uint64_t group, void * data) {
+        py::gil_scoped_acquire acquire;
+        auto & d = *static_cast<Driver *>(data);
+        try {d.start(index, group);} catch (...) {d.fail();}
+      }, &driver));
+    rcl_ret_t result;
+    {
+      py::gil_scoped_release release;
+      result = rcl_executor_spin(core_, 1, [](const rcl_executor_item_t * item, void * data) {
+            py::gil_scoped_acquire acquire;
+            auto & d = *static_cast<Driver *>(data);
+            try {d.dispatch(d.self->claimed(*item));} catch (...) {d.fail();}
+        }, &driver);
+    }
+    checked(rcl_executor_set_thread_start(core_, nullptr, nullptr));
+    if (driver.error) {std::rethrow_exception(driver.error);}
+    checked(result);
   }
   void wake() {rcl_executor_wake(handle_);}
   void stop() {rcl_executor_stop(handle_);}
@@ -241,6 +276,9 @@ void define_rcl_executor(py::module_ & module)
 {
   py::class_<RclExecutorCore>(module, "RclExecutorCore")
   .def(py::init<int>(), py::arg("selection_policy") = 0)
+  .def("set_partitioned", &RclExecutorCore::partitioned)
+  .def("remove_group", &RclExecutorCore::remove_group)
+  .def("spin", &RclExecutorCore::spin)
   .def("set_group_priority", &RclExecutorCore::priority)
   .def("add_group", &RclExecutorCore::group)
   .def("add", &RclExecutorCore::add)

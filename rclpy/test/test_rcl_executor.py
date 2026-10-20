@@ -219,3 +219,192 @@ def test_selection_policy_priority():
     executor.shutdown()
     node.destroy_node()
     context.shutdown()
+
+
+def test_thread_start_on_spinning_thread():
+    import threading
+
+    from rclpy.context import Context
+
+    context = Context()
+    context.init()
+    executor = RclExecutor(context=context)
+    starts = []
+    executor.on_thread_start(lambda index, group: starts.append(
+        (index, group, threading.get_ident())))
+    executor.post(executor.shutdown)
+    executor.spin()
+    assert starts == [(0, None, threading.get_ident())]
+    context.shutdown()
+    context.destroy()
+
+
+def test_partition_threads_isolation_and_dynamic_groups():
+    import threading
+    import time
+
+    import rclpy
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+    from rclpy.context import Context
+    import pytest
+
+    context = Context()
+    context.init()
+    node = rclpy.create_node('python_partition', context=context)
+    executor = RclExecutor(context=context, partitioned=True)
+    slow = MutuallyExclusiveCallbackGroup()
+    fast = MutuallyExclusiveCallbackGroup()
+    starts = {}
+    calls = {}
+    entered = threading.Event()
+    finished = threading.Event()
+    fast_done = threading.Event()
+    errors = []
+
+    def start(index, group):
+        assert group not in starts
+        starts[group] = (index, threading.get_ident())
+
+    def slow_callback():
+        slow_timer.cancel()
+        calls.setdefault(slow, set()).add(threading.get_ident())
+        entered.set()
+        time.sleep(.2)
+        finished.set()
+
+    def fast_callback():
+        calls.setdefault(fast, set()).add(threading.get_ident())
+        fast_done.set()
+
+    slow_timer = node.create_timer(.001, slow_callback, callback_group=slow)
+    fast_timer = node.create_timer(.002, fast_callback, callback_group=fast)
+    executor.on_thread_start(start)
+    executor.add_node(node)
+
+    def spin():
+        try:
+            executor.spin()
+        except BaseException as error:
+            errors.append(error)
+
+    worker = threading.Thread(target=spin)
+    worker.start()
+    try:
+        assert entered.wait(2.)
+        begin = time.monotonic()
+        assert fast_done.wait(.1)
+        assert time.monotonic() - begin < .1
+        assert not finished.is_set()
+        fast_timer.cancel()
+        node.destroy_timer(fast_timer)
+        late = MutuallyExclusiveCallbackGroup()
+        late_done = threading.Event()
+
+        def late_callback():
+            late_timer.cancel()
+            calls.setdefault(late, set()).add(threading.get_ident())
+            late_done.set()
+
+        late_timer = node.create_timer(.001, late_callback, callback_group=late)
+        assert late_done.wait(1.)
+        node.destroy_timer(late_timer)
+        assert finished.wait(1.)
+        for group in (slow, fast, late):
+            assert calls[group] == {starts[group][1]}
+        assert starts[slow][1] != starts[fast][1]
+        other = rclpy.create_node('python_reentrant', context=context)
+        other.create_timer(1., lambda: None, callback_group=ReentrantCallbackGroup())
+        try:
+            with pytest.raises(ValueError, match='Reentrant'):
+                executor.add_node(other)
+        finally:
+            other.destroy_node()
+    finally:
+        executor.shutdown()
+        worker.join(2.)
+        assert not worker.is_alive()
+        node.destroy_node()
+        context.shutdown()
+        context.destroy()
+    assert not errors
+
+
+def test_partition_coroutine_resumes_on_its_group_thread():
+    import threading
+
+    import rclpy
+    from rclpy.context import Context
+
+    context = Context()
+    context.init()
+    node = rclpy.create_node('partition_coroutine', context=context)
+    executor = RclExecutor(context=context, partitioned=True)
+    future = executor.create_future()
+    entered = threading.Event()
+    done = threading.Event()
+    threads = []
+
+    async def callback():
+        timer.cancel()
+        threads.append(threading.get_ident())
+        entered.set()
+        await future
+        threads.append(threading.get_ident())
+        done.set()
+
+    timer = node.create_timer(.001, callback)
+    executor.add_node(node)
+    worker = threading.Thread(target=executor.spin)
+    worker.start()
+    try:
+        assert entered.wait(2.)
+        task = executor.create_task(lambda: future.set_result(True))
+        assert done.wait(2.)
+        assert task.done()
+        assert len(threads) == 2
+        assert threads[0] == threads[1]
+        assert threads[0] != threading.get_ident()
+    finally:
+        executor.shutdown()
+        worker.join(2.)
+        assert not worker.is_alive()
+        node.destroy_node()
+        context.shutdown()
+        context.destroy()
+
+
+def test_partition_posted_coroutine_leaves_the_control_worker_available():
+    import threading
+
+    from rclpy.context import Context
+
+    context = Context()
+    context.init()
+    executor = RclExecutor(context=context, partitioned=True)
+    future = executor.create_future()
+    entered = threading.Event()
+    done = threading.Event()
+    threads = []
+
+    async def callback():
+        threads.append(threading.get_ident())
+        entered.set()
+        await future
+        threads.append(threading.get_ident())
+        done.set()
+
+    task = executor.post(callback)
+    worker = threading.Thread(target=executor.spin)
+    worker.start()
+    try:
+        assert entered.wait(2.)
+        executor.post(future.set_result, True)
+        assert done.wait(2.)
+        assert task.done()
+        assert threads[0] == threads[1]
+    finally:
+        executor.shutdown()
+        worker.join(2.)
+        assert not worker.is_alive()
+        context.shutdown()
+        context.destroy()
