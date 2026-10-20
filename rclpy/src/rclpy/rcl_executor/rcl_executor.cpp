@@ -8,6 +8,7 @@
 
 #include <pybind11/pybind11.h>
 #include <rcl_executor/executor.h>
+#include <rcl_executor/trace.h>
 #include <rcl/error_handling.h>
 #include <exception>
 #include <functional>
@@ -56,6 +57,7 @@ public:
   {
     checked(rcl_executor_create_with_policy(
         &core_, static_cast<rcl_executor_selection_policy_t>(policy)));
+    checked(rcl_executor_set_trace_client(core_, RCL_EXECUTOR_TRACE_RCLPY));
     handle_ = rcl_executor_get_handle(core_);
     signal_ = std::make_unique<ScopedSignalCallback>([this] {rcl_executor_wake(handle_);});
   }

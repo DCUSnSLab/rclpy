@@ -41,6 +41,7 @@ from typing import Union
 
 import warnings
 
+from rclpy._rcl_executor import RclExecutorMixin, SelectionPolicy
 from rclpy.client import Client
 from rclpy.clock import Clock
 from rclpy.clock_type import ClockType
@@ -160,7 +161,7 @@ class TaskData:
     source_entity: 'Optional[WaitableEntityType]' = None
 
 
-class Executor(ContextManager['Executor']):
+class Executor(RclExecutorMixin, ContextManager['Executor']):
     """
     The base class for an executor.
 
@@ -186,6 +187,7 @@ class Executor(ContextManager['Executor']):
 
     def __init__(self, *, context: Optional[Context] = None) -> None:
         super().__init__()
+        self._core = None
         self._context = get_default_context() if context is None else context
         self._nodes: Set[Node] = set()
         self._nodes_lock = RLock()
@@ -258,6 +260,8 @@ class Executor(ContextManager['Executor']):
 
         :param task: A task to be run in the executor.
         """
+        if self._core is not None:
+            return self._core_call_task_in_next_spin(task)
         with self._tasks_lock:
             self._ready_tasks.append(task)
             if self._guard:
@@ -276,6 +280,11 @@ class Executor(ContextManager['Executor']):
         :return: ``True`` if all outstanding callbacks finished executing, or ``False`` if the
             timeout expires before all outstanding work is done.
         """
+        if self._core is not None:
+            return self._core_shutdown(timeout_sec)
+        return self._stock_shutdown(timeout_sec)
+
+    def _stock_shutdown(self, timeout_sec: Optional[float] = None) -> bool:
         with self._shutdown_lock:
             if not self._is_shutdown:
                 self._is_shutdown = True
@@ -327,6 +336,11 @@ class Executor(ContextManager['Executor']):
 
         :param node: The node to remove from the executor.
         """
+        if self._core is not None:
+            return self._core_remove_node(node)
+        return self._stock_remove_node(node)
+
+    def _stock_remove_node(self, node: 'Node') -> None:
         with self._nodes_lock:
             try:
                 self._nodes.remove(node)
@@ -342,6 +356,8 @@ class Executor(ContextManager['Executor']):
 
         This is used to tell the executor when entities are created or destroyed.
         """
+        if self._core is not None:
+            return self._core_wake()
         if self._guard:
             self._guard.trigger()
 
@@ -651,6 +667,10 @@ class Executor(ContextManager['Executor']):
         :param condition: A callable that makes the function return immediately when it evaluates
             to True.
         """
+        if self._core is not None:
+            yield from self._core_wait_for_ready_callbacks(timeout_sec, nodes, condition)
+            return
+
         timeout_timer = None
         timeout_nsec = timeout_sec_to_nsec(
             timeout_sec.timeout if isinstance(timeout_sec, TimeoutObject) else timeout_sec)
@@ -918,14 +938,25 @@ class Executor(ContextManager['Executor']):
 class SingleThreadedExecutor(Executor):
     """Runs callbacks in the thread that calls :meth:`Executor.spin`."""
 
+    _use_core_default = True
+
     def __init__(self, *, context: Optional[Context] = None) -> None:
         super().__init__(context=context)
+        if self._use_core_default and os.environ.get('ROS_EXECUTOR_CORE') == '1':
+            self._init_core(selection_policy=SelectionPolicy.WAIT_SET)
+
+    def spin(self) -> None:
+        if self._core is not None:
+            return self._core_spin()
+        super().spin()
 
     def _spin_once_impl(
         self,
         timeout_sec: Optional[Union[float, TimeoutObject]] = None,
         wait_condition: Callable[[], bool] = lambda: False
     ) -> None:
+        if self._core is not None and self._core_dispatch(1, wait_condition):
+            return
         try:
             handler, entity, node = self.wait_for_ready_callbacks(
                 timeout_sec, None, wait_condition)
@@ -988,6 +1019,10 @@ class MultiThreadedExecutor(Executor):
         *, context: Optional[Context] = None
     ) -> None:
         super().__init__(context=context)
+        if os.environ.get('ROS_EXECUTOR_CORE') == '1':
+            self._init_core(selection_policy=SelectionPolicy.WAIT_SET)
+            self._core_thread_pool = True
+
         if num_threads is None:
             # On Linux, it will try to use the number of CPU this process has access to.
             # Other platforms, os.sched_getaffinity() doesn't exist so we use the number of CPUs.
