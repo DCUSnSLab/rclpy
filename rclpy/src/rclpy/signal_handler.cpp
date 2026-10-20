@@ -143,12 +143,9 @@ setup_deferred_signal_handler()
       while (g_signal_handler_installed.load()) {
         wait_for_signal();
         if (g_signal_handler_installed.load()) {
-          trigger_guard_conditions();
           rclpy::shutdown_contexts();
-          // TODO(bmartin427) It feels like I want to do this *after* the contexts are shut down,
-          // to ensure the callbacks see the shut down state, and we don't end up going back to
-          // spin again.  But I'm not sure why the same argument doesn't hold for the guard
-          // conditions above.
+          // Only after the shutdown: a wait woken earlier sees a valid context and sleeps again.
+          trigger_guard_conditions();
           invoke_callbacks();
         }
       }

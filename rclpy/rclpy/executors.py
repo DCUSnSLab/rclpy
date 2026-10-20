@@ -754,14 +754,20 @@ class Executor(ContextManager['Executor']):
 
                 context_stack.enter_context(self._context.handle)
 
-                wait_set = _rclpy.WaitSet(
-                    entity_count.num_subscriptions,
-                    entity_count.num_guard_conditions,
-                    entity_count.num_timers,
-                    entity_count.num_clients,
-                    entity_count.num_services,
-                    entity_count.num_events,
-                    self._context.handle)
+                try:
+                    wait_set = _rclpy.WaitSet(
+                        entity_count.num_subscriptions,
+                        entity_count.num_guard_conditions,
+                        entity_count.num_timers,
+                        entity_count.num_clients,
+                        entity_count.num_services,
+                        entity_count.num_events,
+                        self._context.handle)
+                except _rclpy.RCLError:
+                    # The signal handler thread can shut the context down since the check above.
+                    if not self._context.ok():
+                        raise ExternalShutdownException()
+                    raise
 
                 wait_set.clear_entities()
                 for sub_handle in sub_handles:
