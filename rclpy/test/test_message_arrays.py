@@ -47,7 +47,7 @@ def test_owned_deserialized_arrays(message_type, dtype, size):
         data.setflags(write=True)
     assert message == original
     assert deserialize_message(serialize_message(message), message_type) == original
-    reference = weakref.ref(data.base)
+    reference = weakref.ref(data)
     view = data[::2]
     del data, message
     gc.collect()
