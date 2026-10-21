@@ -51,7 +51,8 @@ namespace events_executor
 /// This executor implementation attempts to replicate the function of the rclcpp EventsExecutor
 /// for the benefit of rclpy applications.  It is implemented in C++ to minimize the overhead of
 /// processing the event loop.
-/// Guard condition callbacks observe rcl triggers only; rmw graph guard conditions are not collected.
+/// Guard condition callbacks observe rcl triggers only; rmw graph guard conditions are not
+/// collected.
 ///
 /// We assume all public methods could be invoked from any thread.  Callbacks on the executor loop
 /// will be issued on the thread that called one of the spin*() variants (ignoring any parallelism
