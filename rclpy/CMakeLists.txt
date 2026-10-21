@@ -179,6 +179,7 @@ if(BUILD_TESTING)
       test/test_action_server.py
       test/test_callback_group.py
       test/test_client.py
+      test/test_intra_process_services.py
       test/test_clock.py
       test/test_context.py
       test/test_create_node.py
