@@ -506,7 +506,10 @@ class Executor(RclExecutorMixin, ContextManager['Executor']):
                     msg_tuple = msg_info
 
                 async def _execute():
-                    await await_or_execute(sub.callback, *msg_tuple)
+                    if sub._callback_is_coroutine:
+                        await sub.callback(*msg_tuple)
+                    else:
+                        sub.callback(*msg_tuple)
 
                 return _execute
         except InvalidHandle:

@@ -1082,6 +1082,43 @@ class TestExecutor(unittest.TestCase):
         finally:
             executor.shutdown()
 
+    def test_subscription_callback_replaced_at_runtime(self) -> None:
+        from test_msgs.msg import BasicTypes
+
+        for cls in [SingleThreadedExecutor, MultiThreadedExecutor]:
+            with self.subTest(cls=cls):
+                received = []
+
+                def plain(msg):
+                    received.append(msg.int32_value)
+
+                async def coroutine(msg, info):
+                    received.append((-msg.int32_value, info is not None))
+
+                topic = 'callback_replaced_' + cls.__name__
+                sub = self.node.create_subscription(BasicTypes, topic, plain, 10)
+                pub = self.node.create_publisher(BasicTypes, topic, 10)
+                executor = cls(context=self.context)
+                executor.add_node(self.node)
+
+                def publish_and_spin(value, count):
+                    pub.publish(BasicTypes(int32_value=value))
+                    end = time.monotonic() + 5.
+                    while len(received) < count and time.monotonic() < end:
+                        executor.spin_once(timeout_sec=0.1)
+
+                try:
+                    publish_and_spin(1, 1)
+                    sub.callback = coroutine
+                    publish_and_spin(2, 2)
+                    sub.callback = plain
+                    publish_and_spin(3, 3)
+                    self.assertEqual(received, [1, (-2, True), 3])
+                finally:
+                    executor.shutdown()
+                    self.node.destroy_publisher(pub)
+                    self.node.destroy_subscription(sub)
+
 
 if __name__ == '__main__':
     unittest.main()

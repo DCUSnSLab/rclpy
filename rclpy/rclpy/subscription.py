@@ -111,6 +111,7 @@ class Subscription:
 
     @callback.setter
     def callback(self, value):
+        self._callback_is_coroutine = inspect.iscoroutinefunction(value)
         self._callback = value
         self._callback_type = Subscription.CallbackType.MessageOnly
         try:
