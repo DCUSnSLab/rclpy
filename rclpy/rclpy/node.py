@@ -1646,7 +1646,7 @@ class Node:
 
         try:
             if raw:
-                subscription_object.disable_ipc()
+                subscription_object.set_serialized_ipc()
             subscription = Subscription(
                 subscription_object, msg_type,
                 topic, callback, callback_group, qos_profile, raw,

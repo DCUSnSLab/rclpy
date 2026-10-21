@@ -19,6 +19,7 @@ import pytest
 
 import rclpy
 from rclpy.node import Node
+from rclpy.serialization import deserialize_message
 from rclpy.subscription import Subscription
 from rclpy.subscription_content_filter_options import ContentFilterOptions
 
@@ -431,3 +432,34 @@ def test_subscription_content_filter_at_create_subscription(test_node) -> None:
 
     pub.destroy()
     sub.destroy()
+
+
+@pytest.mark.parametrize('raw_count', [1, 2])
+def test_raw_and_typed_fanout(test_node, raw_count):
+    raw_messages = [[] for _ in range(raw_count)]
+    typed_messages = []
+    subscriptions = [test_node.create_subscription(
+        BasicTypes, 'raw_fanout', messages.append, 3, raw=True)
+        for messages in raw_messages]
+    subscriptions.append(test_node.create_subscription(
+        BasicTypes, 'raw_fanout', typed_messages.append, 3))
+    publisher = test_node.create_publisher(BasicTypes, 'raw_fanout', 3)
+    deadline = time.monotonic() + 5
+    while publisher.get_subscription_count() < len(subscriptions):
+        assert time.monotonic() < deadline
+        rclpy.spin_once(test_node, timeout_sec=0.01)
+    expected = [BasicTypes(int64_value=value) for value in range(3)]
+    for message in expected:
+        publisher.publish(message)
+    deadline = time.monotonic() + 5
+    while len(typed_messages) < 3 or any(len(messages) < 3 for messages in raw_messages):
+        assert time.monotonic() < deadline
+        rclpy.spin_once(test_node, timeout_sec=0.01)
+    for messages in raw_messages:
+        assert all(isinstance(message, bytes) for message in messages)
+        assert [deserialize_message(message, BasicTypes) for message in messages] == expected
+    assert typed_messages == expected
+    for _ in range(10):
+        rclpy.spin_once(test_node, timeout_sec=0.01)
+    assert len(typed_messages) == 3
+    assert all(len(messages) == 3 for messages in raw_messages)

@@ -353,6 +353,9 @@ define_subscription(py::object module)
     py::arg("topic"),
     py::arg("qos_profile"),
     py::arg("content_filter_options") = py::none())
+  .def("set_serialized_ipc", [](Subscription & sub) {
+      rcl_subscription_set_serialized_ipc(sub.rcl_ptr());
+  })
   .def("disable_ipc", [](Subscription & sub) {rcl_subscription_disable_ipc(sub.rcl_ptr());})
   .def_property_readonly(
     "pointer", [](const Subscription & subscription) {
