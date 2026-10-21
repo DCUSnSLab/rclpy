@@ -132,7 +132,8 @@ class Node:
         parameter_overrides: Optional[List[Parameter]] = None,
         allow_undeclared_parameters: bool = False,
         automatically_declare_parameters_from_overrides: bool = False,
-        enable_logger_service: bool = False
+        enable_logger_service: bool = False,
+        use_clock_thread: bool = False
     ) -> None:
         """
         Create a Node.
@@ -159,6 +160,8 @@ class Node:
         :param enable_logger_service: ``True`` if ROS2 services are created to allow external nodes
             to get and set logger levels of this node. Otherwise, logger levels are only managed
             locally. That is, logger levels cannot be changed remotely.
+        :param use_clock_thread: ``True`` to take "/clock" on a dedicated thread while
+            ``use_sim_time`` is set, so that ROS time advances while callbacks of this node run.
         """
         self.__handle = None
         self._context = get_default_context() if context is None else context
@@ -234,7 +237,7 @@ class Node:
         # Init a time source.
         # Note: parameter overrides and parameter event publisher need to be ready at this point
         # to be able to declare 'use_sim_time' if it was not declared yet.
-        self._time_source = TimeSource(node=self)
+        self._time_source = TimeSource(node=self, use_clock_thread=use_clock_thread)
         self._time_source.attach_clock(self._clock)
 
         if start_parameter_services:
@@ -1948,6 +1951,7 @@ class Node:
         * :func:`create_guard_condition`
 
         """
+        self._time_source._stop_clock_thread()
         # Drop extra reference to parameter event publisher.
         # It will be destroyed with other publishers below.
         self._parameter_event_publisher = None

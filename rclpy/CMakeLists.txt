@@ -216,6 +216,7 @@ if(BUILD_TESTING)
       test/test_subscription.py
       test/test_task.py
       test/test_time_source.py
+      test/test_time_source_clock_thread.py
       test/test_time.py
       test/test_timer.py
       test/test_topic_or_service_is_hidden.py
