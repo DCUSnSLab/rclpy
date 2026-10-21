@@ -126,10 +126,24 @@ convert_from_py(py::object pymessage)
   return message;
 }
 
+namespace
+{
+// Callers pass the message class, except expire_goals which passes a GoalInfo instance.
+py::capsule
+convert_to_py_capsule(const py::object & pyclass)
+{
+  PyObject * cls = pyclass.ptr();
+  if (!PyType_Check(cls)) {
+    cls = reinterpret_cast<PyObject *>(Py_TYPE(cls));
+  }
+  return py::handle(cls).attr("_CONVERT_TO_PY").cast<py::capsule>();
+}
+}  // namespace
+
 py::object
 convert_to_py(void * message, py::object pyclass)
 {
-  auto capsule_ptr = static_cast<void *>(pyclass.attr("_CONVERT_TO_PY").cast<py::capsule>());
+  auto capsule_ptr = static_cast<void *>(convert_to_py_capsule(pyclass));
 
   typedef PyObject * convert_to_py_function (void *);
   auto convert = reinterpret_cast<convert_to_py_function *>(capsule_ptr);
@@ -159,7 +173,7 @@ convert_to_py_owned(
   if (!numpy_views) {
     return convert_to_py(raw_message, pyclass);
   }
-  auto capsule = pyclass.attr("_CONVERT_TO_PY").cast<py::capsule>();
+  auto capsule = convert_to_py_capsule(pyclass);
   using Converter = PyObject * (*)(void *, PyObject *);
   auto convert = reinterpret_cast<Converter>(PyCapsule_GetContext(capsule.ptr()));
   if (convert == nullptr) {
