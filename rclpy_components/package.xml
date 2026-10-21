@@ -3,7 +3,7 @@
 <package format="3">
   <name>rclpy_components</name>
   <version>7.1.12</version>
-  <description>Component containers for rclpy nodes.</description>
+  <description>Component containers for rclpy nodes, alone or next to rclcpp components in one process.</description>
 
   <maintainer email="sloretz@openrobotics.org">Shane Loretz</maintainer>
   <maintainer email="aditya.pande@openrobotics.org">Aditya Pande</maintainer>
@@ -15,14 +15,21 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
+  <build_depend>pybind11_vendor</build_depend>
+  <build_depend>python3-dev</build_depend>
+
   <depend>composition_interfaces</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
 
   <exec_depend>rclpy</exec_depend>
 
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <test_depend>composition</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>std_msgs</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

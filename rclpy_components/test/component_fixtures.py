@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from rclpy.node import Node
+from std_msgs.msg import String
 
 
 class FooNode(Node):
@@ -26,3 +27,28 @@ class Broken(Node):
 
     def __init__(self, **kwargs):
         raise ValueError('Oops I failed to construct')
+
+
+class Talker(Node):
+
+    def __init__(self, **kwargs):
+        super().__init__('py_talker', **kwargs)
+        self.count = 0
+        self.publisher = self.create_publisher(String, 'chatter', 10)
+        self.create_timer(0.1, self.on_timer)
+
+    def on_timer(self):
+        self.count += 1
+        self.publisher.publish(String(data=f'py {self.count}'))
+
+
+class Relay(Node):
+    """Republish every received chatter message on heard, prefixed with 'relay '."""
+
+    def __init__(self, **kwargs):
+        super().__init__('py_relay', **kwargs)
+        self.publisher = self.create_publisher(String, 'heard', 10)
+        self.create_subscription(String, 'chatter', self.on_chatter, 10)
+
+    def on_chatter(self, msg):
+        self.publisher.publish(String(data='relay ' + msg.data))
