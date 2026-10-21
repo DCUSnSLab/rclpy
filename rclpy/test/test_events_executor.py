@@ -639,6 +639,26 @@ class TestEventsExecutor(unittest.TestCase):
         pub_node.publish(0.0)
         self._check_message_future(received_future, 0.0)
 
+    def test_sub_with_message_info(self) -> None:
+        node = rclpy.node.Node('test_sub_info_node')
+        received = rclpy.Future()
+
+        def callback(msg: test_msgs.msg.BasicTypes, info: dict) -> None:
+            if not received.done():
+                received.set_result((msg, info))
+
+        node.create_subscription(
+            test_msgs.msg.BasicTypes, 'test_topic_info', callback, _get_pub_sub_qos(False))
+        publisher = node.create_publisher(
+            test_msgs.msg.BasicTypes, 'test_topic_info', _get_pub_sub_qos(False))
+        self.executor.add_node(node)
+        publisher.publish(test_msgs.msg.BasicTypes(float64_value=2.5))
+        self.executor.spin_until_future_complete(received, timeout_sec=5.0)
+        self.assertTrue(received.done())
+        msg, info = received.result()
+        self.assertEqual(2.5, msg.float64_value)
+        self.assertIn('received_timestamp', info)
+
     def test_pub_sub_multi_message(self) -> None:
         # Creates a transient local publisher and queues multiple messages on it.  Then
         # creates a subscriber and makes sure all sent messages get delivered when it
