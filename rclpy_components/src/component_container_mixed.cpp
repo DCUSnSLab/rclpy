@@ -188,7 +188,9 @@ private:
           PyCapsule_GetPointer(object, "rcl_context_shared_ptr"));
       });
     lease.release();
-    py::object context = py::module_::import("rclpy.context").attr("Context")();
+    // The default context, so that rclpy.ok() and other default-context calls in components
+    // see the container context, as in the pure Python container.
+    py::object context = py::module_::import("rclpy.utilities").attr("get_default_context")();
     context.attr("init")(py::arg("context_lease") = capsule, py::arg("initialize_logging") = false);
     auto executors = py::module_::import("rclpy.executors");
     executor_py_ = executors.attr("SingleThreadedExecutor")(py::arg("context") = context);

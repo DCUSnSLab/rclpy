@@ -114,3 +114,15 @@ def test_cpp_and_python_components_in_one_container(container, client_node):
     assert process.wait(timeout=10) == 0
     log.seek(0)
     assert 'Traceback' not in log.read()
+
+
+def test_python_components_see_the_container_context(container, client_node):
+    load_cli = client_node.create_client(LoadNode, '/mixed_test/_container/load_node')
+    assert load_cli.wait_for_service(timeout_sec=10.0)
+    probes = []
+    client_node.create_subscription(String, 'probe', lambda msg: probes.append(msg.data), 10)
+    response = load_cli.call(LoadNode.Request(
+        package_name='rclpy_components', plugin_name='component_fixtures:OkProbe'))
+    assert response.success, response.error_message
+    wait_for(lambda: probes, 'no probe message')
+    assert probes[0] == 'ok True'

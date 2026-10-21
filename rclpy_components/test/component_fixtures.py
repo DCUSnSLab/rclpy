@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -52,3 +53,15 @@ class Relay(Node):
 
     def on_chatter(self, msg):
         self.publisher.publish(String(data='relay ' + msg.data))
+
+
+class OkProbe(Node):
+    """Publish what rclpy.ok() reports for the default context, as worker loops use it."""
+
+    def __init__(self, **kwargs):
+        super().__init__('py_ok_probe', **kwargs)
+        self.publisher = self.create_publisher(String, 'probe', 10)
+        self.create_timer(0.1, self.on_timer)
+
+    def on_timer(self):
+        self.publisher.publish(String(data=f'ok {rclpy.ok()}'))
