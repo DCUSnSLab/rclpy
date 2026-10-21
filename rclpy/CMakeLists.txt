@@ -187,6 +187,7 @@ if(BUILD_TESTING)
       test/test_destruction.py
       test/test_events_executor.py
       test/test_executor.py
+      test/test_executor_spin_some.py
       test/test_rcl_executor.py
       test/test_expand_topic_name.py
       test/test_guard_condition.py

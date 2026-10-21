@@ -333,6 +333,7 @@ class RclExecutorMixin:
     def _core_wait_for_ready_callbacks(
         self, timeout_sec: Optional[Union[float, TimeoutObject]] = None,
         nodes: Optional[List] = None, condition: Callable[[], bool] = lambda: False,
+        in_pass: bool = False,
     ):
         from rclpy.executors import (
             ConditionReachedException, ExternalShutdownException, ShutdownException,
@@ -369,7 +370,7 @@ class RclExecutorMixin:
                 return
             item, self._claimed_item = self._claimed_item, None
             if item is None:
-                item = self._core.next()
+                item = self._core.next_in_pass() if in_pass else self._core.next()
             if item is not None:
                 key, token, kind = item
                 if kind == 6:
@@ -395,6 +396,19 @@ class RclExecutorMixin:
             if remaining == 0:
                 raise TimeoutException()
             self._core.wait(remaining)
+
+    def _core_spin_some(self, end: Optional[float]) -> None:
+        from rclpy.executors import TimeoutException
+        self._core.begin_pass()
+        while end is None or time.monotonic() < end:
+            try:
+                handler, _, _ = next(
+                    self._core_wait_for_ready_callbacks(0, None, lambda: False, True))
+            except (StopIteration, TimeoutException):
+                return
+            handler()
+            if handler.exception() is not None:
+                raise handler.exception()
 
     def _core_dispatch(self, batch: int, wait_condition: Callable[[], bool]) -> bool:
         """Run up to ``batch`` plain subscription callbacks without building Tasks."""

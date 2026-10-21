@@ -450,6 +450,39 @@ class Executor(RclExecutorMixin, ContextManager['Executor']):
     ) -> None:
         raise NotImplementedError()
 
+    def spin_some(self, max_duration_sec: float = 0.0) -> None:
+        """
+        Execute the work that is ready now, then return.
+
+        Like ``rclcpp::Executor::spin_some``: wait once without blocking and execute the ready
+        callbacks in the calling thread, each entity at most once. A message that arrives for an
+        entity that already ran is left to the next call.
+
+        This method should not be called from multiple threads.
+
+        :param max_duration_sec: Start no further callback after this many seconds.
+            No limit if 0.
+        """
+        self._enter_spin()
+        try:
+            end = None if max_duration_sec <= 0 else time.monotonic() + max_duration_sec
+            if self._core is not None:
+                return self._core_spin_some(end)
+            work = self._wait_for_ready_callbacks(0)
+            try:
+                for handler, _, _ in work:
+                    handler()
+                    if handler.exception() is not None:
+                        raise handler.exception()
+                    if end is not None and time.monotonic() >= end:
+                        break
+            except (TimeoutException, ShutdownException, ConditionReachedException):
+                pass
+            finally:
+                work.close()
+        finally:
+            self._exit_spin()
+
     def spin_once_until_future_complete(
         self,
         future: Future,

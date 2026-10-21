@@ -51,6 +51,7 @@ class RclExecutorCore
   std::unordered_map<void *, std::unique_ptr<py::object>> posted_;
   // Subscriptions whose callback is a plain function, keyed by registration, with that callback.
   std::unordered_map<uint64_t, std::pair<py::object, py::object>> plain_;
+  std::vector<rcl_executor_id_t> pass_;
 
 public:
   explicit RclExecutorCore(int policy)
@@ -235,6 +236,17 @@ public:
     if (result != RCL_EXECUTOR_READY) {return py::none();}
     return claimed(item);
   }
+  // spin_some: next_in_pass() claims each registration at most once until begin_pass().
+  void begin_pass() {pass_.clear();}
+  py::object next_in_pass()
+  {
+    rcl_executor_item_t item;
+    auto result = rcl_executor_next_excluding(core_, &item, pass_.data(), pass_.size());
+    if (result == RCL_EXECUTOR_ERROR) {throw RCLError("rcl executor claim failed");}
+    if (result != RCL_EXECUTOR_READY) {return py::none();}
+    pass_.push_back(item.registration);
+    return claimed(item);
+  }
 
 private:
   // By value: remove() may erase the plain_ entry while take_message releases the GIL.
@@ -289,6 +301,8 @@ void define_rcl_executor(py::module_ & module)
   .def("remove", &RclExecutorCore::remove)
   .def("wait", &RclExecutorCore::wait)
   .def("next", &RclExecutorCore::next)
+  .def("begin_pass", &RclExecutorCore::begin_pass)
+  .def("next_in_pass", &RclExecutorCore::next_in_pass)
   .def("set_plain", &RclExecutorCore::set_plain)
   .def("dispatch", &RclExecutorCore::dispatch)
   .def("post", &RclExecutorCore::post)
