@@ -39,6 +39,7 @@
 #include "node.hpp"
 #include "serialization.hpp"
 #include "subscription.hpp"
+#include "trace.hpp"
 #include "utils.hpp"
 
 using pybind11::literals::operator""_a;
@@ -250,6 +251,7 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       pytaken_msg = convert_to_py_owned(std::move(taken_msg), pymsg_type);
     }
   }
+  rclpy_trace_take_converted(subscription.get(), pytaken_msg.ptr());
   py::object pub_seq_number = py::none();
   if (message_info.publication_sequence_number != RMW_MESSAGE_INFO_SEQUENCE_NUMBER_UNSUPPORTED) {
     pub_seq_number = py::int_(message_info.publication_sequence_number);

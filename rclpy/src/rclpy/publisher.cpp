@@ -29,6 +29,7 @@
 #include "exceptions.hpp"
 #include "node.hpp"
 #include "publisher.hpp"
+#include "trace.hpp"
 #include "utils.hpp"
 
 namespace rclpy
@@ -211,6 +212,7 @@ Publisher::get_topic_name()
 void
 Publisher::publish(py::object pymsg)
 {
+  rclpy_trace_publish_enter(rcl_publisher_.get());
   auto raw_ros_message = convert_from_py(pymsg);
   if (!raw_ros_message) {
     throw py::error_already_set();
@@ -260,6 +262,7 @@ Publisher::borrow_loaned_message(py::object pymsg_type)
 bool
 Publisher::publish_loaned_message(py::object pyloan, py::object pymsg)
 {
+  rclpy_trace_publish_enter(rcl_publisher_.get());
   auto loan = pyloan.cast<std::shared_ptr<PublisherLoan>>();
   if (loan->published) {
     throw py::value_error("the loaned message was already published");
