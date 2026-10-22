@@ -47,15 +47,15 @@ public:
     }
     {
       py::gil_scoped_acquire gil;
-      executor_py_.attr("shutdown")();
+      log_python_error([this] {executor_py_.attr("shutdown")();});
     }
     thread_.join();
     py::gil_scoped_acquire gil;
     for (auto & entry : python_nodes_) {
-      entry.second.second.attr("destroy_node")();
+      log_python_error([&entry] {entry.second.second.attr("destroy_node")();});
     }
     python_nodes_.clear();
-    context_py_.attr("destroy")();
+    log_python_error([this] {context_py_.attr("destroy")();});
     executor_py_ = py::object();
     context_py_ = py::object();
     load_ = py::object();
@@ -143,6 +143,18 @@ protected:
   }
 
 private:
+  // The destructor must not throw, so Python errors during teardown are only logged.
+  template<typename CallT>
+  void
+  log_python_error(CallT && call)
+  {
+    try {
+      call();
+    } catch (py::error_already_set & e) {
+      RCLCPP_ERROR(get_logger(), "%s", e.what());
+    }
+  }
+
   bool
   is_cpp_component(const LoadNode::Request & request) const
   {
