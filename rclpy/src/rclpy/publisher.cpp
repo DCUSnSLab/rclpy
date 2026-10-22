@@ -17,6 +17,7 @@
 #include <rcl/error_handling.h>
 #include <rcl/publisher.h>
 #include <rosidl_runtime_c/message_type_support_struct.h>
+#include <rmw/rmw.h>
 #include <rmw/serialized_message.h>
 
 #include <memory>
@@ -32,6 +33,91 @@
 
 namespace rclpy
 {
+namespace
+{
+/// A message lent by the middleware, returned unless it was published.
+struct PublisherLoan
+{
+  PublisherLoan(std::shared_ptr<rcl_publisher_t> publisher, void * message)
+  : publisher(std::move(publisher)), message(message) {}
+
+  ~PublisherLoan()
+  {
+    if (published) {
+      return;
+    }
+    // The rmw call, unlike rcl's, also works after shutdown. Some middlewares cannot finalize
+    // a publisher that still lends messages.
+    rmw_publisher_t * rmw_publisher = rcl_publisher_get_rmw_handle(publisher.get());
+    if (!rmw_publisher ||
+      RMW_RET_OK != rmw_return_loaned_message_from_publisher(rmw_publisher, message))
+    {
+      RCUTILS_SAFE_FWRITE_TO_STDERR("[rclpy] failed to return a loaned message: ");
+      RCUTILS_SAFE_FWRITE_TO_STDERR(rcutils_get_error_string().str);
+      RCUTILS_SAFE_FWRITE_TO_STDERR("\n");
+      rcutils_reset_error();
+    }
+  }
+
+  std::shared_ptr<rcl_publisher_t> publisher;
+  void * message;
+  bool published = false;
+  // Live LoanBuffer objects, each the base of NumPy views of message.
+  size_t buffers = 0;
+};
+
+/// Base object of the NumPy views of a loan. Its writable buffer makes the views writable.
+struct LoanBuffer
+{
+  explicit LoanBuffer(std::shared_ptr<PublisherLoan> loan)
+  : loan(std::move(loan)) {++this->loan->buffers;}
+
+  ~LoanBuffer() {--loan->buffers;}
+
+  std::shared_ptr<PublisherLoan> loan;
+};
+
+bool
+is_message(py::handle value)
+{
+  return py::hasattr(py::type::handle_of(value), "_TYPE_SUPPORT");
+}
+
+/// Delete the fields of pymsg, and of the messages in it, that are views of loan.
+void
+detach_views(py::handle pymsg, const PublisherLoan * loan)
+{
+  for (auto name : py::type::handle_of(pymsg).attr("__slots__")) {
+    PyObject * value = PyObject_GetAttr(pymsg.ptr(), name.ptr());
+    if (value == nullptr) {
+      PyErr_Clear();
+      continue;
+    }
+    auto field = py::reinterpret_steal<py::object>(value);
+    if (PyLong_Check(value) || PyFloat_Check(value)) {
+      continue;
+    }
+    if (PyObject_CheckBuffer(value)) {
+      auto base = py::getattr(field, "base", py::none());
+      if (py::isinstance<LoanBuffer>(base) &&
+        base.cast<const LoanBuffer &>().loan.get() == loan &&
+        PyObject_DelAttr(pymsg.ptr(), name.ptr()) < 0)
+      {
+        throw py::error_already_set();
+      }
+    } else if (PyList_Check(value)) {
+      for (auto item : field) {
+        if (is_message(item)) {
+          detach_views(item, loan);
+        }
+      }
+    } else if (is_message(field)) {
+      detach_views(field, loan);
+    }
+  }
+}
+}  // namespace
+
 Publisher::Publisher(
   Node & node, py::object pymsg_type, std::string topic,
   py::object pyqos_profile)
@@ -143,6 +229,57 @@ Publisher::publish(py::object pymsg)
   }
 }
 
+bool
+Publisher::can_loan_messages() const
+{
+  return rcl_publisher_can_loan_messages(rcl_publisher_.get());
+}
+
+py::tuple
+Publisher::borrow_loaned_message(py::object pymsg_type)
+{
+  auto type_support = static_cast<rosidl_message_type_support_t *>(
+    common_get_type_support(pymsg_type));
+  if (!type_support) {
+    throw py::error_already_set();
+  }
+  void * message = nullptr;
+  if (RCL_RET_OK != rcl_borrow_loaned_message(rcl_publisher_.get(), type_support, &message)) {
+    throw RCLError("Failed to borrow a loaned message");
+  }
+  auto loan = std::make_shared<PublisherLoan>(rcl_publisher_, message);
+  py::object pymsg;
+  {
+    // Only the views keep the buffer alive, so PublisherLoan::buffers counts the live views.
+    py::object buffer = py::cast(std::make_unique<LoanBuffer>(loan));
+    pymsg = convert_to_py_with_owner(message, buffer, pymsg_type);
+  }
+  return py::make_tuple(py::cast(loan), pymsg);
+}
+
+bool
+Publisher::publish_loaned_message(py::object pyloan, py::object pymsg)
+{
+  auto loan = pyloan.cast<std::shared_ptr<PublisherLoan>>();
+  if (loan->published) {
+    throw py::value_error("the loaned message was already published");
+  }
+  convert_from_py(pymsg, loan->message);
+  detach_views(pymsg, loan.get());
+  if (loan->buffers > 0) {
+    // Python still references the loan, which the middleware would own once published.
+    if (RCL_RET_OK != rcl_publish(rcl_publisher_.get(), loan->message, NULL)) {
+      throw RCLError("Failed to publish");
+    }
+    return false;
+  }
+  if (RCL_RET_OK != rcl_publish_loaned_message(rcl_publisher_.get(), loan->message, NULL)) {
+    throw RCLError("Failed to publish");
+  }
+  loan->published = true;
+  return true;
+}
+
 void
 Publisher::publish_raw(std::string msg)
 {
@@ -172,6 +309,12 @@ Publisher::wait_for_all_acked(rcl_duration_t pytimeout)
 void
 define_publisher(py::object module)
 {
+  py::class_<PublisherLoan, std::shared_ptr<PublisherLoan>>(module, "PublisherLoan");
+  py::class_<LoanBuffer>(module, "PublisherLoanBuffer", py::buffer_protocol())
+  .def_buffer(
+    [](LoanBuffer & buffer) {
+      return py::buffer_info(buffer.loan->message, 1, "B", 0, false);
+    });
   py::class_<Publisher, Destroyable, std::shared_ptr<Publisher>>(module, "Publisher")
   .def(py::init<Node &, py::object, std::string, py::object>())
   .def_property_readonly(
@@ -194,6 +337,15 @@ define_publisher(py::object module)
   .def(
     "publish_raw", &Publisher::publish_raw,
     "Publish a serialized message.")
+  .def(
+    "can_loan_messages", &Publisher::can_loan_messages,
+    "Whether the middleware lends messages to this publisher.")
+  .def(
+    "borrow_loaned_message", &Publisher::borrow_loaned_message,
+    "Borrow a message from the middleware.")
+  .def(
+    "publish_loaned_message", &Publisher::publish_loaned_message,
+    "Publish a borrowed message.")
   .def(
     "wait_for_all_acked", &Publisher::wait_for_all_acked,
     "Wait until all published message data is acknowledged");

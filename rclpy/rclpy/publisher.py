@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TypeVar, Union
+from typing import Generic, Optional, TypeVar, Union
 
 from rclpy.callback_groups import CallbackGroup
 from rclpy.duration import Duration
@@ -22,6 +22,35 @@ from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.qos import QoSProfile
 
 MsgType = TypeVar('MsgType')
+
+
+class LoanedMessage(Generic[MsgType]):
+    """
+    A message borrowed from a publisher with :meth:`Publisher.borrow_loaned_message`.
+
+    Publish it with :meth:`Publisher.publish`. Leaving a ``with`` block returns it unpublished.
+    """
+
+    def __init__(self, msg: MsgType, loan=None) -> None:
+        self._msg: Optional[MsgType] = msg
+        self._loan = loan
+
+    @property
+    def msg(self) -> MsgType:
+        """Get the message to fill; its numeric arrays are writable views of the loan."""
+        if self._msg is None:
+            raise RuntimeError('the loaned message was already published or returned')
+        return self._msg
+
+    def __enter__(self) -> 'LoanedMessage[MsgType]':
+        return self
+
+    def __exit__(self, *_) -> None:
+        self._release()
+
+    def _release(self) -> None:
+        self._msg = None
+        self._loan = None
 
 
 class Publisher:
@@ -57,11 +86,13 @@ class Publisher:
         self.event_handlers: EventHandler = event_callbacks.create_event_handlers(
             callback_group, publisher_impl, topic)
 
-    def publish(self, msg: Union[MsgType, bytes]) -> None:
+    def publish(self, msg: Union[MsgType, bytes, LoanedMessage[MsgType]]) -> None:
         """
         Send a message to the topic for the publisher.
 
-        :param msg: The ROS message to publish.
+        :param msg: The ROS message to publish. A :class:`LoanedMessage` is published without
+          copying it, unless NumPy views of it are still referenced outside of its message; then
+          a copy is published. Either way its message can no longer be used.
         :raises: TypeError if the type of the passed message isn't an instance
           of the provided type when the publisher was constructed.
         """
@@ -70,8 +101,48 @@ class Publisher:
                 self.__publisher.publish(msg)
             elif isinstance(msg, bytes):
                 self.__publisher.publish_raw(msg)
+            elif isinstance(msg, LoanedMessage):
+                self._publish_loaned_message(msg)
             else:
                 raise TypeError('Expected {}, got {}'.format(self.msg_type, type(msg)))
+
+    def _publish_loaned_message(self, loaned: LoanedMessage[MsgType]) -> None:
+        msg = loaned.msg
+        if not isinstance(msg, self.msg_type):
+            raise TypeError('Expected {}, got {}'.format(self.msg_type, type(msg)))
+        loan = loaned._loan
+        loaned._release()
+        if loan is None:
+            self.__publisher.publish(msg)
+        else:
+            self.__publisher.publish_loaned_message(loan, msg)
+
+    @property
+    def can_loan_messages(self) -> bool:
+        """
+        Whether :meth:`borrow_loaned_message` lends middleware memory.
+
+        The middleware lends only types of fixed size, such as messages without strings or
+        unbounded arrays.
+        """
+        with self.handle:
+            return self.__publisher.can_loan_messages()
+
+    def borrow_loaned_message(self) -> LoanedMessage[MsgType]:
+        """
+        Borrow a message to fill in place and publish with :meth:`publish`.
+
+        When the middleware lends messages to this publisher, the message is its memory and the
+        numeric arrays of the message are writable NumPy views of it, so publishing it copies
+        nothing. What a lent message holds before it is filled depends on the middleware:
+        rmw_zenoh_cpp gives the default values of the type, others may give an earlier message,
+        so set every field. Otherwise the message is an ordinary new message.
+        """
+        with self.handle:
+            if not self.__publisher.can_loan_messages():
+                return LoanedMessage(self.msg_type())
+            loan, msg = self.__publisher.borrow_loaned_message(self.msg_type)
+            return LoanedMessage(msg, loan)
 
     def get_subscription_count(self) -> int:
         """Get the amount of subscribers that this publisher has."""

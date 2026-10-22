@@ -20,6 +20,7 @@
 #include <rcl/subscription.h>
 #include <rcl/types.h>
 #include <rosidl_runtime_c/message_type_support_struct.h>
+#include <rmw/rmw.h>
 #include <rmw/types.h>
 
 #include <chrono>
@@ -61,6 +62,30 @@ get_c_vector_string(const std::vector<std::string> & strings_in)
   }
 
   return cstrings;
+}
+
+/// A message lent by the middleware, returned when the converted message no longer needs it.
+struct SubscriptionLoan
+{
+  std::shared_ptr<rcl_subscription_t> subscription;
+  void * message;
+};
+
+void
+return_loan(void * value)
+{
+  std::unique_ptr<SubscriptionLoan> loan(static_cast<SubscriptionLoan *>(value));
+  // The rmw call, unlike rcl's, also works after shutdown.
+  rmw_subscription_t * rmw_subscription =
+    rcl_subscription_get_rmw_handle(loan->subscription.get());
+  if (!rmw_subscription ||
+    RMW_RET_OK != rmw_return_loaned_message_from_subscription(rmw_subscription, loan->message))
+  {
+    RCUTILS_SAFE_FWRITE_TO_STDERR("[rclpy] failed to return a loaned message: ");
+    RCUTILS_SAFE_FWRITE_TO_STDERR(rcutils_get_error_string().str);
+    RCUTILS_SAFE_FWRITE_TO_STDERR("\n");
+    rcutils_reset_error();
+  }
 }
 }  // namespace
 
@@ -191,6 +216,20 @@ Subscription::take_message(py::object pymsg_type, bool raw)
           rcl_ipc_message_release(static_cast<rcl_ipc_message_t *>(value));
         });
       pytaken_msg = convert_to_py_owned(const_cast<void *>(data), std::move(guard), pymsg_type);
+    } else if (rcl_subscription_can_loan_messages(subscription.get())) {
+      void * loaned = nullptr;
+      ret = take([&] {
+            return rcl_take_loaned_message(subscription.get(), &loaned, &message_info, NULL);
+        });
+      if (RCL_RET_OK != ret) {
+        if (RCL_RET_SUBSCRIPTION_TAKE_FAILED == ret) {
+          return py::none();
+        }
+        throw RCLError("failed to take loaned message from subscription");
+      }
+      std::unique_ptr<void, destroy_ros_message_function *> guard(
+        new SubscriptionLoan{subscription, loaned}, return_loan);
+      pytaken_msg = convert_to_py_owned(loaned, std::move(guard), pymsg_type);
     } else {
       auto taken_msg = create_from_py(pymsg_type);
 
@@ -225,6 +264,12 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       "received_timestamp"_a = message_info.received_timestamp,
       "publication_sequence_number"_a = pub_seq_number,
       "reception_sequence_number"_a = rec_seq_number));
+}
+
+bool
+Subscription::can_loan_messages() const
+{
+  return rcl_subscription_can_loan_messages(rcl_subscription_.get());
 }
 
 const char *
@@ -374,6 +419,9 @@ define_subscription(py::object module)
   .def(
     "get_publisher_count", &Subscription::get_publisher_count,
     "Count the publishers from a subscription.")
+  .def(
+    "can_loan_messages", &Subscription::can_loan_messages,
+    "Whether the subscription takes messages lent by the middleware.")
   .def("is_cft_enabled", &Subscription::is_cft_enabled,
     "Check if content filtering is enabled for this subscription.")
   .def(

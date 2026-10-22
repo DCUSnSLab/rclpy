@@ -86,6 +86,19 @@ class Subscription:
             return self.__subscription.get_publisher_count()
 
     @property
+    def can_loan_messages(self) -> bool:
+        """
+        Whether received messages are lent by the middleware instead of copied out of it.
+
+        Loans need a type of fixed size and a middleware that lends it, and Jazzy disables them
+        for subscriptions unless ``ROS_DISABLE_LOANED_MESSAGES=0``. With
+        ``RCLPY_MESSAGE_ARRAYS=numpy`` the numeric arrays of a lent message are read-only views of
+        it, and the loan is returned when the last of them is gone.
+        """
+        with self.handle:
+            return self.__subscription.can_loan_messages()
+
+    @property
     def handle(self):
         return self.__subscription
 

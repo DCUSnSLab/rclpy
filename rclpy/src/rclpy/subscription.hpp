@@ -97,6 +97,10 @@ public:
   size_t
   get_publisher_count() const;
 
+  /// Whether take_message takes messages lent by the middleware.
+  bool
+  can_loan_messages() const;
+
   /// Get rcl_subscription_t pointer
   rcl_subscription_t *
   rcl_ptr() const

@@ -98,6 +98,31 @@ public:
   void
   publish_raw(std::string msg);
 
+  /// Whether borrow_loaned_message lends middleware memory.
+  bool
+  can_loan_messages() const;
+
+  /// Borrow a message from the middleware.
+  /**
+   * Raises RCLError if the middleware cannot lend a message.
+   *
+   * \param[in] pymsg_type Message type of the publisher.
+   * \return (loan, message): the message's numeric arrays are writable views of the loan.
+   */
+  py::tuple
+  borrow_loaned_message(py::object pymsg_type);
+
+  /// Publish a message borrowed with borrow_loaned_message.
+  /**
+   * Fills the loan from \p pymsg and removes the loan's views from \p pymsg.
+   * Raises RCLError if the message cannot be published.
+   *
+   * \return true if the loan itself was published, false if views of it are still referenced
+   *   elsewhere and a copy of it was published instead.
+   */
+  bool
+  publish_loaned_message(py::object loan, py::object pymsg);
+
   /// Get rcl_publisher_t pointer
   rcl_publisher_t *
   rcl_ptr() const
