@@ -65,3 +65,13 @@ class OkProbe(Node):
 
     def on_timer(self):
         self.publisher.publish(String(data=f'ok {rclpy.ok()}'))
+
+
+class FailingDestroy(Node):
+
+    def __init__(self, **kwargs):
+        super().__init__('py_failing_destroy', **kwargs)
+
+    def destroy_node(self):
+        super().destroy_node()
+        raise RuntimeError('destroy_node failed')

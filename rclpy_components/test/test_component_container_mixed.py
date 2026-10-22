@@ -126,3 +126,16 @@ def test_python_components_see_the_container_context(container, client_node):
     assert response.success, response.error_message
     wait_for(lambda: probes, 'no probe message')
     assert probes[0] == 'ok True'
+
+
+def test_shutdown_survives_a_failing_destroy_node(container, client_node):
+    process, log = container
+    load_cli = client_node.create_client(LoadNode, '/mixed_test/_container/load_node')
+    assert load_cli.wait_for_service(timeout_sec=10.0)
+    response = load_cli.call(LoadNode.Request(
+        package_name='rclpy_components', plugin_name='component_fixtures:FailingDestroy'))
+    assert response.success, response.error_message
+    process.send_signal(signal.SIGINT)
+    assert process.wait(timeout=10) == 0
+    log.seek(0)
+    assert 'destroy_node failed' in log.read()
