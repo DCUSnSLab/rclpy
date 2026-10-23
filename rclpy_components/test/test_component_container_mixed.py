@@ -139,3 +139,44 @@ def test_shutdown_survives_a_failing_destroy_node(container, client_node):
     assert process.wait(timeout=10) == 0
     log.seek(0)
     assert 'destroy_node failed' in log.read()
+
+
+def test_type_adapted_messages_cross_languages(tmp_path, client_node):
+    log = open(tmp_path / 'container.log', 'w+')
+    process = subprocess.Popen(
+        [os.environ['MIXED_CONTAINER'], '--ros-args', '-r', '__node:=mixed_test'],
+        stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ, RCL_INTRA_PROCESS='1'))
+    try:
+        load_cli = client_node.create_client(LoadNode, '/mixed_test/_container/load_node')
+        assert load_cli.wait_for_service(timeout_sec=10.0)
+        heard = []
+        client_node.create_subscription(String, 'heard', lambda msg: heard.append(msg.data), 10)
+        for package_name, plugin_name in [
+                ('rclpy_components', 'component_fixtures:AdaptedListener'),
+                ('composition', 'composition::Talker'),
+                ('composition', 'composition::Listener'),
+                ('rclpy_components', 'component_fixtures:AdaptedTalker')]:
+            response = load_cli.call(
+                LoadNode.Request(package_name=package_name, plugin_name=plugin_name))
+            assert response.success, response.error_message
+        broker = os.environ.get('RMW_IMPLEMENTATION') == 'rmw_zenoh_cpp'
+        wait_for(lambda: any(h.startswith('listener Hello World: ') and
+                             h.endswith('converted=True') for h in heard),
+                 'Python adapted listener did not convert the C++ talker')
+        wait_for(lambda: any(h.startswith('listener adapted ') and
+                             h.endswith(f'converted={not broker}') for h in heard),
+                 'Python adapted listener did not receive the Python adapted talker')
+
+        def cpp_listener_heard_python():
+            log.seek(0)
+            return 'I heard: [adapted ' in log.read()
+        wait_for(cpp_listener_heard_python, 'C++ listener did not receive the adapted talker')
+        process.send_signal(signal.SIGINT)
+        assert process.wait(timeout=10) == 0
+        log.seek(0)
+        assert 'Traceback' not in log.read()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        log.close()
