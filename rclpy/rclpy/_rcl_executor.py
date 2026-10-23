@@ -98,6 +98,16 @@ class _DirectCall:
             raise self._exception
 
 
+class _Source:
+    """A callback that an external event source schedules with ``notify_source``."""
+
+    __slots__ = ('callback', 'group')
+
+    def __init__(self, callback, group):
+        self.callback = callback
+        self.group = group
+
+
 class SelectionPolicy(IntEnum):
     """Selection order for the shared scheduler."""
 
@@ -127,6 +137,7 @@ class RclExecutorMixin:
         self._dirty = True
         self._selected_nodes = ()
         self._plain: Dict = {}
+        self._sources: Dict = {}
         self._claimed_item = None
         self._core_thread_pool = False
         self._internal = [self._core.add(5, guard.handle, 0, 0)
@@ -180,7 +191,11 @@ class RclExecutorMixin:
             self._stop_partitions()
             return
         key, _, kind = item
-        if kind == 6:
+        if kind == 6 and isinstance(key, _Source):
+            task = self._source_task(key)
+        elif kind == 6:
+            if key is None:
+                return
             task = key if isinstance(key, Task) else Task(key, executor=self)
             task()
             if task.done():
@@ -260,6 +275,7 @@ class RclExecutorMixin:
                 self._remove_entity(key)
         groups = {id(entity.callback_group): entity.callback_group
                   for entity, _, _ in desired.values()}
+        groups.update((id(source.group), source.group) for source in self._sources.values())
         for key in self._groups.keys() - groups.keys():
             self._core.remove_group(key)
         self._groups = groups
@@ -296,6 +312,13 @@ class RclExecutorMixin:
             if cached[1]:
                 self._core.set_plain(self._entities[id(sub)][3][0], sub, callback)
         return cached[1]
+
+    def _source_task(self, source, token=None):
+        from rclpy.executors import TaskData
+        task = _ClaimedTask(source.callback, self, token)
+        with self._tasks_lock:
+            self._pending_tasks[task] = TaskData()
+        return task
 
     def _claimed_handler(self, entity, node, waitset, token, kind):
         from rclpy.executors import await_or_execute, TaskData
@@ -373,8 +396,13 @@ class RclExecutorMixin:
                 item = self._core.next_in_pass() if in_pass else self._core.next()
             if item is not None:
                 key, token, kind = item
+                if kind == 6 and isinstance(key, _Source):
+                    yield self._source_task(key, token), None, None
+                    return
                 if kind == 6:
                     self._core.complete(token)
+                    if key is None:
+                        continue
                     task = key if isinstance(key, Task) else Task(key, executor=self)
                     yield task, None, None
                     return
@@ -450,6 +478,9 @@ class RclExecutorMixin:
                 task.cancel()
         for key in list(self._entities):
             self._remove_entity(key)
+        for registration in list(self._sources):
+            self._core.remove(registration)
+        self._sources.clear()
         for registration in self._internal:
             self._core.remove(registration)
         self._internal.clear()

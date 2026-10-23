@@ -49,6 +49,7 @@ class RclExecutorCore
   std::unordered_map<uint64_t, std::shared_ptr<events_executor::ScopedWith>> lifetimes_;
   std::unordered_map<uint64_t, View> views_;
   std::unordered_map<void *, std::unique_ptr<py::object>> posted_;
+  std::unordered_map<uint64_t, std::unique_ptr<py::object>> sources_;
   // Subscriptions whose callback is a plain function, keyed by registration, with that callback.
   std::unordered_map<uint64_t, std::pair<py::object, py::object>> plain_;
   std::vector<rcl_executor_id_t> pass_;
@@ -77,6 +78,7 @@ public:
     plain_.clear();
     lifetimes_.clear();
     posted_.clear();
+    sources_.clear();
   }
   void partitioned(bool value) {checked(rcl_executor_set_partitioned(core_, value));}
   void remove_group(uint64_t id) {checked(rcl_executor_remove_group(core_, id));}
@@ -180,7 +182,18 @@ public:
     views_.erase(id);
     plain_.erase(id);
     lifetimes_.erase(id);
+    sources_.erase(id);
   }
+  // claimed() returns source itself as the key of its items.
+  uint64_t add_source(py::object source, uint64_t group_id)
+  {
+    auto owned = std::make_unique<py::object>(std::move(source));
+    auto id = add_raw(RCL_EXECUTOR_WORK, nullptr, reinterpret_cast<uintptr_t>(owned.get()),
+        group_id);
+    sources_.emplace(id, std::move(owned));
+    return id;
+  }
+  void notify(uint64_t id, size_t count) {checked(rcl_executor_notify(core_, id, count));}
   int wait(int64_t ns)
   {
     py::gil_scoped_release release;
@@ -271,6 +284,12 @@ private:
       posted_.erase(posted);
       return py::make_tuple(work, item.token, static_cast<int>(item.type));
     }
+    if (item.type == RCL_EXECUTOR_WORK && item.context) {
+      // A source removed after the core handed out this item has no key: the item is skipped.
+      auto source = sources_.find(item.registration);
+      py::object key = source == sources_.end() ? py::none() : *source->second;
+      return py::make_tuple(key, item.token, static_cast<int>(item.type));
+    }
     auto found = views_.find(item.registration);
     if (found != views_.end()) {
       for (auto & view : views_) {
@@ -298,6 +317,8 @@ void define_rcl_executor(py::module_ & module)
   .def("add_group", &RclExecutorCore::group)
   .def("add", &RclExecutorCore::add)
   .def("add_waitable", &RclExecutorCore::add_waitable)
+  .def("add_source", &RclExecutorCore::add_source)
+  .def("notify", &RclExecutorCore::notify)
   .def("remove", &RclExecutorCore::remove)
   .def("wait", &RclExecutorCore::wait)
   .def("next", &RclExecutorCore::next)

@@ -8,7 +8,9 @@
 
 from test import test_waitable
 
+import pytest
 from rclpy.experimental import RclExecutor
+from rclpy.experimental import SelectionPolicy
 
 
 class TestRclWaitable(test_waitable.TestWaitable):
@@ -402,6 +404,159 @@ def test_partition_posted_coroutine_leaves_the_control_worker_available():
         assert done.wait(2.)
         assert task.done()
         assert threads[0] == threads[1]
+    finally:
+        executor.shutdown()
+        worker.join(2.)
+        assert not worker.is_alive()
+        context.shutdown()
+        context.destroy()
+
+
+@pytest.mark.parametrize('policy', [SelectionPolicy.FIFO, SelectionPolicy.WAIT_SET])
+def test_pipe_source_orders_with_ros_and_removes_pending_work(policy):
+    import os
+    import threading
+    import time
+
+    import rclpy
+    from rclpy.context import Context
+    from test_msgs.msg import Empty
+
+    context = Context()
+    context.init()
+    node = rclpy.create_node('external_pipe', context=context)
+    executor = RclExecutor(context=context, selection_policy=policy)
+    sequence = []
+    node.create_subscription(Empty, 'external_order', lambda _: sequence.append('ros'), 10)
+    publisher = node.create_publisher(Empty, 'external_order', 10)
+    executor.add_node(node)
+    source = executor.add_source(node.default_callback_group, lambda: sequence.append('external'))
+    reader, writer = os.pipe()
+    try:
+        def driver():
+            os.read(reader, 1)
+            executor.notify_source(source)
+
+        thread = threading.Thread(target=driver)
+        thread.start()
+        os.write(writer, b'x')
+        thread.join()
+        publisher.publish(Empty())
+        time.sleep(.05)
+        executor.spin_some()
+        expected = ['external', 'ros'] if policy == SelectionPolicy.FIFO else ['ros', 'external']
+        assert sequence == expected
+        executor.notify_source(source)
+        executor.remove_source(source)
+        executor.notify_source(source)
+        executor.spin_some()
+        assert len(sequence) == 2
+    finally:
+        os.close(reader)
+        os.close(writer)
+        executor.shutdown()
+        node.destroy_node()
+        context.shutdown()
+        context.destroy()
+
+
+def test_source_runs_once_per_notification_and_raises_from_spin():
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.context import Context
+
+    context = Context()
+    context.init()
+    executor = RclExecutor(context=context)
+    calls = []
+    source = executor.add_source(MutuallyExclusiveCallbackGroup(), lambda: calls.append(1))
+
+    def fail():
+        raise RuntimeError('source failed')
+
+    failing = executor.add_source(MutuallyExclusiveCallbackGroup(), fail)
+    try:
+        executor.notify_source(source, 3)
+        for _ in range(3):
+            executor.spin_once(timeout_sec=1.)
+        assert calls == [1, 1, 1]
+        executor.notify_source(failing)
+        with pytest.raises(RuntimeError, match='source failed'):
+            executor.spin_once(timeout_sec=1.)
+    finally:
+        executor.shutdown()
+        context.shutdown()
+        context.destroy()
+
+
+def test_coroutine_source_holds_its_exclusive_group():
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+    from rclpy.context import Context
+
+    context = Context()
+    context.init()
+    executor = RclExecutor(context=context)
+    group = MutuallyExclusiveCallbackGroup()
+    future = executor.create_future()
+    sequence = []
+
+    async def waiting():
+        sequence.append('enter')
+        await future
+        sequence.append('leave')
+
+    first = executor.add_source(group, waiting)
+    second = executor.add_source(group, lambda: sequence.append('second'))
+    try:
+        executor.notify_source(first)
+        executor.spin_once(timeout_sec=1.)
+        executor.notify_source(second)
+        executor.spin_once(timeout_sec=.1)
+        assert sequence == ['enter']
+        future.set_result(True)
+        executor.spin_until_future_complete(future, timeout_sec=1.)
+        for _ in range(3):
+            executor.spin_once(timeout_sec=.1)
+        assert sequence == ['enter', 'leave', 'second']
+    finally:
+        executor.shutdown()
+        context.shutdown()
+        context.destroy()
+
+
+def test_partition_source_runs_on_its_group_thread():
+    import threading
+
+    from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+    from rclpy.context import Context
+
+    context = Context()
+    context.init()
+    executor = RclExecutor(context=context, partitioned=True)
+    starts = {}
+    executor.on_thread_start(
+        lambda index, group: starts.__setitem__(group, threading.get_ident()))
+    worker = threading.Thread(target=executor.spin)
+    worker.start()
+    try:
+        late = MutuallyExclusiveCallbackGroup()
+        threads = []
+        done = threading.Event()
+
+        def callback():
+            threads.append(threading.get_ident())
+            done.set()
+
+        source = executor.add_source(late, callback)
+        removed = executor.add_source(MutuallyExclusiveCallbackGroup(), lambda: threads.append(0))
+        executor.notify_source(removed)
+        executor.remove_source(removed)
+        executor.notify_source(source)
+        assert done.wait(2.)
+        assert threads == [starts[late]]
+        assert threads[0] != threading.get_ident()
+        executor.remove_source(source)
+        with pytest.raises(ValueError, match='Reentrant'):
+            executor.add_source(ReentrantCallbackGroup(), lambda: None)
     finally:
         executor.shutdown()
         worker.join(2.)

@@ -8,8 +8,8 @@
 
 from typing import Callable, Optional, Union
 
-from rclpy._rcl_executor import RclExecutorMixin, SelectionPolicy
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy._rcl_executor import _Source, RclExecutorMixin, SelectionPolicy
+from rclpy.callback_groups import CallbackGroup, ReentrantCallbackGroup
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor, TaskData, TimeoutObject
 from rclpy.task import Task
@@ -40,6 +40,39 @@ class RclExecutor(SingleThreadedExecutor):
         """Set a callback group's integer priority; larger values run first."""
         self._core.add_group(id(group), isinstance(group, ReentrantCallbackGroup))
         self._core.set_group_priority(id(group), priority)
+
+    def add_source(self, callback_group: CallbackGroup, callback: Callable) -> int:
+        """
+        Register a callback that an event source outside of ROS schedules.
+
+        The callback runs in the executor, once per notification, under the rules of
+        ``callback_group`` like the callbacks of its entities: exclusion, priority and, in
+        partition mode, the thread of the group. It takes no arguments and may be a coroutine
+        function. Call :meth:`notify_source` from any thread when the source has work.
+
+        :param callback_group: The callback group the callback runs in.
+        :param callback: The callback.
+        :return: The registration to pass to :meth:`notify_source` and :meth:`remove_source`.
+        """
+        reentrant = isinstance(callback_group, ReentrantCallbackGroup)
+        if self._partitioned and reentrant:
+            raise ValueError('partition mode refuses Reentrant callback groups')
+        self._core.add_group(id(callback_group), reentrant)
+        source = _Source(callback, callback_group)
+        registration = self._core.add_source(source, id(callback_group))
+        self._sources[registration] = source
+        self._groups[id(callback_group)] = callback_group
+        return registration
+
+    def notify_source(self, source: int, count: int = 1) -> None:
+        """Schedule ``count`` runs of a source's callback; a removed source is ignored."""
+        self._core.notify(source, count)
+
+    def remove_source(self, source: int) -> None:
+        """Remove a source and the runs it has pending; a run already started completes."""
+        self._core.remove(source)
+        self._sources.pop(source, None)
+        self._dirty = True
 
     def post(self, callback, *args, **kwargs) -> Task:
         """Post language work to the core and return its Task."""
