@@ -60,6 +60,7 @@ from rclpy.utilities import try_shutdown  # noqa: F401
 if TYPE_CHECKING:
     from rclpy.executors import Executor  # noqa: F401
     from rclpy.node import Node  # noqa: F401
+    from rclpy.time_source import TimeSource  # noqa: F401
 
 
 def init(
@@ -152,7 +153,9 @@ def create_node(
     parameter_overrides: Optional[List[Parameter]] = None,
     allow_undeclared_parameters: bool = False,
     automatically_declare_parameters_from_overrides: bool = False,
-    enable_logger_service: bool = False
+    enable_logger_service: bool = False,
+    use_clock_thread: bool = False,
+    time_source: Optional['TimeSource'] = None,
 ) -> 'Node':
     """
     Create an instance of :class:`.Node`.
@@ -177,6 +180,8 @@ def create_node(
     :param enable_logger_service: ``True`` if ROS2 services are created to allow external nodes
         to get and set logger levels of this node. Otherwise, logger levels are only managed
         locally. That is, logger levels cannot be changed remotely.
+    :param use_clock_thread: ``True`` to take "/clock" on a dedicated thread, see :class:`.Node`.
+    :param time_source: A time source of another node to share, see :class:`.Node`.
     :return: An instance of the newly created node.
     """
     # imported locally to avoid loading extensions on module import
@@ -191,7 +196,9 @@ def create_node(
         automatically_declare_parameters_from_overrides=(
             automatically_declare_parameters_from_overrides
         ),
-        enable_logger_service=enable_logger_service
+        enable_logger_service=enable_logger_service,
+        use_clock_thread=use_clock_thread,
+        time_source=time_source,
         )
 
 

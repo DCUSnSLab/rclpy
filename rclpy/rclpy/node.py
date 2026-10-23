@@ -133,7 +133,8 @@ class Node:
         allow_undeclared_parameters: bool = False,
         automatically_declare_parameters_from_overrides: bool = False,
         enable_logger_service: bool = False,
-        use_clock_thread: bool = False
+        use_clock_thread: bool = False,
+        time_source: Optional[TimeSource] = None,
     ) -> None:
         """
         Create a Node.
@@ -162,6 +163,15 @@ class Node:
             locally. That is, logger levels cannot be changed remotely.
         :param use_clock_thread: ``True`` to take "/clock" on a dedicated thread while
             ``use_sim_time`` is set, so that ROS time advances while callbacks of this node run.
+            Ignored if ``time_source`` is given.
+        :param time_source: A time source to share, from :meth:`get_time_source` of another node.
+            This node attaches its clock to it instead of creating its own, so several nodes in a
+            process use one "/clock" subscription. The node that created the time source decides
+            for all nodes sharing it: its ``use_sim_time`` parameter and ``use_clock_thread``
+            apply, and a sharing node declares no ``use_sim_time`` parameter. Without a clock
+            thread, "/clock" is processed only while the node that created the time source is
+            spun. If that node is destroyed first, its clock thread keeps serving the nodes
+            sharing the time source until the last of them is destroyed.
         """
         self.__handle = None
         self._context = get_default_context() if context is None else context
@@ -237,8 +247,11 @@ class Node:
         # Init a time source.
         # Note: parameter overrides and parameter event publisher need to be ready at this point
         # to be able to declare 'use_sim_time' if it was not declared yet.
-        self._time_source = TimeSource(node=self, use_clock_thread=use_clock_thread)
-        self._time_source.attach_clock(self._clock)
+        if time_source is None:
+            self._time_source = TimeSource(node=self, use_clock_thread=use_clock_thread)
+            self._time_source.attach_clock(self._clock)
+        else:
+            self._time_source = time_source
 
         if start_parameter_services:
             self._parameter_service = ParameterService(self)
@@ -247,6 +260,10 @@ class Node:
             self._logger_service = LoggingService(self)
 
         self._type_description_service = TypeDescriptionService(self)
+
+        if time_source is not None:
+            # Last, so that a constructor that raises leaves no clock attached to a shared one.
+            time_source.attach_clock(self._clock)
 
     @property
     def publishers(self) -> Iterator[Publisher]:
@@ -348,6 +365,10 @@ class Node:
         """Get the namespace of the node."""
         with self.handle:
             return self.handle.get_namespace()
+
+    def get_time_source(self) -> TimeSource:
+        """Get the time source that updates the clock of this node, to share it with others."""
+        return self._time_source
 
     def get_clock(self) -> Clock:
         """Get the clock used by the node."""
@@ -1951,7 +1972,9 @@ class Node:
         * :func:`create_guard_condition`
 
         """
-        self._time_source._stop_clock_thread()
+        self._time_source.detach_clock(self._clock)
+        if self._time_source._get_node() is self:
+            self._time_source._node_destroying()
         # Drop extra reference to parameter event publisher.
         # It will be destroyed with other publishers below.
         self._parameter_event_publisher = None

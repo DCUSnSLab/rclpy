@@ -214,6 +214,7 @@ if(BUILD_TESTING)
       test/test_serialization.py
       test/test_service.py
       test/test_service_introspection.py
+      test/test_shared_time_source.py
       test/test_sigint_shutdown.py
       test/test_subscription.py
       test/test_task.py

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import threading
-from typing import Callable, List, Optional, Set, TYPE_CHECKING
+from typing import Callable, FrozenSet, List, Optional, TYPE_CHECKING
 import weakref
 
 from rcl_interfaces.msg import SetParametersResult
@@ -94,7 +94,11 @@ class TimeSource:
         self._clock_thread: Optional[_ClockThread] = None
         self._use_clock_thread = use_clock_thread
         self._node_weak_ref: Optional[weakref.ReferenceType['Node']] = None
-        self._associated_clocks: Set[ROSClock] = set()
+        # Replaced, never changed in place: the clock thread iterates it while nodes that share
+        # this time source attach and detach their clocks.
+        self._associated_clocks: FrozenSet[ROSClock] = frozenset()
+        self._clocks_lock = threading.Lock()
+        self._node_destroyed = False
         # Zero time is a special value that means time is uninitialized
         self._last_time_set = Time(clock_type=ClockType.ROS_TIME)
         self._ros_time_is_active = False
@@ -189,7 +193,28 @@ class TimeSource:
 
         clock.set_ros_time_override(self._last_time_set)
         clock._set_ros_time_is_active(self.ros_time_is_active)
-        self._associated_clocks.add(clock)
+        with self._clocks_lock:
+            self._associated_clocks = self._associated_clocks | {clock}
+
+    def detach_clock(self, clock: ROSClock) -> None:
+        """
+        Stop updating a clock attached with :meth:`attach_clock`.
+
+        The clock keeps the last time it was given.
+        """
+        with self._clocks_lock:
+            self._associated_clocks = self._associated_clocks - {clock}
+            stop = self._node_destroyed and not self._associated_clocks
+        if stop:
+            self._stop_clock_thread()
+
+    def _node_destroying(self) -> None:
+        # The clock thread keeps serving the clocks of the nodes sharing this time source.
+        with self._clocks_lock:
+            self._node_destroyed = True
+            stop = not self._associated_clocks
+        if stop:
+            self._stop_clock_thread()
 
     def clock_callback(self, msg: rosgraph_msgs.msg.Clock) -> None:
         # Cache the last message in case a new clock is attached.
