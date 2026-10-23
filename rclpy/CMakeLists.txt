@@ -110,6 +110,7 @@ pybind11_add_module(_rclpy_pybind11
   src/rclpy/time_point.cpp
   src/rclpy/trace.cpp
   src/rclpy/timer.cpp
+  src/rclpy/type_adapter.cpp
   src/rclpy/type_description_service.cpp
   src/rclpy/utils.cpp
   src/rclpy/wait_set.cpp

@@ -30,6 +30,7 @@
 #include "node.hpp"
 #include "publisher.hpp"
 #include "trace.hpp"
+#include "type_adapter.hpp"
 #include "utils.hpp"
 
 namespace rclpy
@@ -231,6 +232,28 @@ Publisher::publish(py::object pymsg)
   }
 }
 
+void
+Publisher::publish_adapted(
+  py::object value, const std::string & key, py::object to_ros, py::object pymsg_type)
+{
+  rclpy_trace_publish_enter(rcl_publisher_.get());
+  adapted_publisher_created();
+  auto adapted = std::make_unique<AdaptedMessage>(AdaptedMessage{
+      value, to_ros, pymsg_type, create_from_py(pymsg_type), std::this_thread::get_id()});
+  void * message = adapted->message.get();
+  rcl_ret_t ret;
+  {
+    py::gil_scoped_release release;
+    ret = rcl_publish_ipc_adapted(
+      rcl_publisher_.get(), message, key.c_str(), fill_adapted_message,
+      release_adapted_message, adapted.release());
+  }
+  if (RCL_RET_OK != ret) {
+    rethrow_adapted_fill_error();
+    throw RCLError("Failed to publish");
+  }
+}
+
 bool
 Publisher::can_loan_messages() const
 {
@@ -328,6 +351,12 @@ define_publisher(py::object module)
   .def(
     "get_logger_name", &Publisher::get_logger_name,
     "Get the name of the logger associated with the node of the publisher")
+  .def(
+    "publish_adapted", &Publisher::publish_adapted,
+    "Publish a custom object that to_ros converts only for readers of the ROS message")
+  .def(
+    "enable_type_adapter", [](Publisher &) {adapted_publisher_created();},
+    "Prepare takes in this process for messages of a type adapted publisher")
   .def(
     "get_subscription_count", &Publisher::get_subscription_count,
     "Count subscribers from a publisher.")

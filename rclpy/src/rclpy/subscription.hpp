@@ -135,9 +135,19 @@ public:
   py::object
   get_content_filter() const;
 
+  /// Deliver custom objects of a type adapter.
+  /**
+   * take_message then returns the object of a broker publisher with the same \p key, and
+   * from_ros(message) for any other message.
+   */
+  void
+  set_type_adapter(std::string key, py::object from_ros);
+
 private:
   Node node_;
   std::shared_ptr<rcl_subscription_t> rcl_subscription_;
+  std::string adapter_key_;
+  py::object from_ros_;
   // Whether the last successful take was long enough to release the GIL around the next one.
   bool release_gil_ = false;
 };

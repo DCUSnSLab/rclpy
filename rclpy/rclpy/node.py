@@ -81,6 +81,8 @@ from rclpy.time_source import TimeSource
 from rclpy.timer import Rate
 from rclpy.timer import Timer
 from rclpy.topic_endpoint_info import TopicEndpointInfo
+from rclpy.type_adapter import _broker_key
+from rclpy.type_adapter import resolve_type_adapter
 from rclpy.type_description_service import TypeDescriptionService
 from rclpy.type_support import check_is_valid_msg_type
 from rclpy.type_support import check_is_valid_srv_type
@@ -1544,7 +1546,9 @@ class Node:
         """
         Create a new publisher.
 
-        :param msg_type: The type of ROS messages the publisher will publish.
+        :param msg_type: The type of ROS messages the publisher will publish, or a
+            :class:`.TypeAdapter`, or a custom type that has a registered one. The publisher
+            then also publishes instances of the adapter's custom type.
         :param topic: The name of the topic the publisher will publish to.
         :param qos_profile: A QoSProfile or a history depth to apply to the publisher.
             In the case that a history depth is provided, the QoS history is set to
@@ -1558,6 +1562,9 @@ class Node:
         qos_profile = self._validate_qos_or_depth_parameter(qos_profile)
 
         callback_group = callback_group or self.default_callback_group
+        type_adapter = resolve_type_adapter(msg_type)
+        if type_adapter is not None:
+            msg_type = type_adapter.ros_type
 
         failed = False
         try:
@@ -1596,6 +1603,9 @@ class Node:
         except Exception:
             publisher_object.destroy_when_not_in_use()
             raise
+        if type_adapter is not None:
+            publisher_object.enable_type_adapter()
+            publisher._type_adapter = type_adapter
         self._publishers.append(publisher)
         self._wake_executor()
 
@@ -1620,7 +1630,9 @@ class Node:
         """
         Create a new subscription.
 
-        :param msg_type: The type of ROS messages the subscription will subscribe to.
+        :param msg_type: The type of ROS messages the subscription will subscribe to, or a
+            :class:`.TypeAdapter`, or a custom type that has a registered one. The callback then
+            receives instances of the adapter's custom type.
         :param topic: The name of the topic the subscription will subscribe to.
         :param callback: A user-defined callback function that is called when a message is
             received by the subscription.
@@ -1638,6 +1650,11 @@ class Node:
         qos_profile = self._validate_qos_or_depth_parameter(qos_profile)
 
         callback_group = callback_group or self.default_callback_group
+        type_adapter = resolve_type_adapter(msg_type)
+        if type_adapter is not None:
+            if raw:
+                raise ValueError('Raw subscriptions cannot use a type adapter')
+            msg_type = type_adapter.ros_type
 
         try:
             final_topic = self.resolve_topic_name(topic)
@@ -1671,6 +1688,9 @@ class Node:
         try:
             if raw:
                 subscription_object.set_serialized_ipc()
+            if type_adapter is not None:
+                subscription_object.set_type_adapter(
+                    _broker_key(type_adapter), type_adapter.from_ros)
             subscription = Subscription(
                 subscription_object, msg_type,
                 topic, callback, callback_group, qos_profile, raw,
@@ -1678,6 +1698,7 @@ class Node:
         except Exception:
             subscription_object.destroy_when_not_in_use()
             raise
+        subscription._type_adapter = type_adapter
         callback_group.add_entity(subscription)
         self._subscriptions.append(subscription)
         self._wake_executor()

@@ -89,6 +89,21 @@ public:
   void
   publish(py::object pymsg);
 
+  /// Publish a custom object of a type adapted publisher
+  /**
+   * Broker readers in this process that use the same type adapter, identified by \p key, receive
+   * \p value itself. For other readers, to_ros(value) is converted to the C message once, when
+   * the first of them needs it. Raises the error of to_ros if it is called while publishing.
+   *
+   * \param[in] value Custom object to send.
+   * \param[in] key Identifies the type adapter.
+   * \param[in] to_ros Converts value to an instance of \p pymsg_type.
+   * \param[in] pymsg_type Message type of the publisher.
+   */
+  void
+  publish_adapted(
+    py::object value, const std::string & key, py::object to_ros, py::object pymsg_type);
+
   /// Publish a serialized message
   /**
    * Raises RCLError if the message cannot be published

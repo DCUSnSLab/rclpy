@@ -1,68 +1,70 @@
 # Python type adapters
 
-`rclpy.type_adapter` is experimental. A `TypeAdapter` binds a custom Python class
-to a generated ROS wire class, `to_ros(custom)`, and `from_ros(message)`.
-Registering an adapter supplies the default representation for that Python class;
-an endpoint can select an explicit adapter to use another representation. Existing
-endpoints retain their selected adapter when later registrations are attempted.
-Conflicting default registrations fail instead of changing running endpoints.
+`rclpy.type_adapter.TypeAdapter` is the Python counterpart of `rclcpp::TypeAdapter`.
+It binds a custom Python type to a ROS message type with two conversions,
+`to_ros(custom)` and `from_ros(message)`. Pass the adapter, or a custom type that
+has a registered adapter, where a message type is expected:
 
 ```python
 import numpy
 from std_msgs.msg import Float64MultiArray
-from rclpy.type_adapter import (
-    TypeAdapter, create_publisher, create_subscription, register_type_adapter)
+from rclpy.type_adapter import TypeAdapter, register_type_adapter
 
 adapter = TypeAdapter(
     numpy.ndarray, Float64MultiArray,
     lambda value: Float64MultiArray(data=value),
     lambda message: numpy.asarray(message.data))
 register_type_adapter(adapter)
-publisher = create_publisher(node, numpy.ndarray, 'samples', 10)
-subscription = create_subscription(node, numpy.ndarray, 'samples', consume, 10)
+publisher = node.create_publisher(numpy.ndarray, 'samples', 10)
+subscription = node.create_subscription(numpy.ndarray, 'samples', consume, 10)
 publisher.publish(numpy.arange(1024, dtype=numpy.float64))
-node.destroy_subscription(subscription)
-node.destroy_publisher(publisher.ros_publisher)
 ```
 
-The ROS wire type, type hash, discovery, QoS, content filtering, tracing, and
-serialization remain those of `Float64MultiArray`. Array dtype, dimensions,
-strides, units, and any layout metadata belong to the adapter's contract. This
-example accepts native float64 vectors; the generated setter checks that contract.
-The user callback may be synchronous or asynchronous and may receive message
-information as its second argument. Conversion exceptions propagate through the
-normal publish/callback error path. Raw subscriptions are rejected because their
-callbacks receive serialized bytes rather than the adapter's ROS message type.
-Without an adapter, ordinary `Publisher.publish(numpy_array)` raises `TypeError`.
+`register_type_adapter` makes an adapter the default for its custom type; a
+conflicting registration raises `ValueError`. `node.create_publisher(adapter, ...)`
+uses an adapter without registering it.
+
+The topic, its type hash, discovery, QoS, content filtering and serialization are
+those of the ROS message type. `Publisher.msg_type` and `Subscription.msg_type` are
+the ROS type and `type_adapter` is the adapter. An adapted publisher publishes both
+custom objects and ROS messages. An adapted subscription callback receives custom
+objects and may be a coroutine and take message information as its second argument.
+Raw subscriptions cannot use an adapter.
 
 ## Delivery
 
-`AdaptedPublisher.publish` calls `to_ros` once and publishes the ROS message with
-the ordinary `Publisher`. The adapted subscription calls `from_ros` on every
-received message before the user callback. Both conversions always run, including
-between two nodes in one process.
-
-The message between them takes the ordinary rclpy path:
-
-| Route | What happens to the ROS message |
+| Reader | What it receives from an adapted Python publisher |
 | --- | --- |
-| rcl broker (`RCL_INTRA_PROCESS=1`, `rmw_zenoh_cpp`, same rcl context) | The C message built from the Python message is handed to the broker without serialization. An rclpy subscription takes that C message without a copy and converts it to a Python message; a C++ subscription receives one conversion to its C++ type |
-| RMW | Serialized and delivered as for any other publisher |
+| Subscription with an equal adapter, same rcl context, broker on | The published object itself. Neither conversion runs |
+| Any other subscription in the same context, broker on | The ROS message from `to_ros`, converted once for all of them by the first reader that takes it. Python readers with an adapter call `from_ros` on it |
+| Readers in other processes, or broker off | `to_ros` runs once while publishing; readers deserialize the message |
+
+The broker is on with `RCL_INTRA_PROCESS=1` and `rmw_zenoh_cpp`. Adapters are
+equal when their four fields are, so subscriptions created with the adapter the
+publisher used, or with the registered one, receive the object. C++ subscriptions,
+including `rclcpp::TypeAdapter` ones in a mixed component container, receive the ROS
+message. A Python subscription receives the ROS message of an adapted C++ publisher
+and calls `from_ros` on it.
+
+The object is shared, not copied: the publisher must not modify it after
+`publish`, and subscriptions receiving the same object must not modify it either.
+Arrays inside it can be made read-only (`array.flags.writeable = False`) to have
+NumPy enforce this.
+
+`to_ros` runs on the publishing thread when a reader in another process exists, and
+an exception it raises propagates from `publish`. When it runs later for a reader in
+the same process, possibly on a thread of a C++ executor, an exception is reported
+through `sys.unraisablehook` and that reader receives nothing. `to_ros` must return
+an instance of the ROS message type; otherwise it fails with `TypeError`.
 
 With `RCLPY_MESSAGE_ARRAYS=numpy`, the message given to `from_ros` exposes numeric
-arrays as read-only NumPy views of the received C message. `from_ros` can return
-such a view; its base keeps the C message alive after the wrapper message and the
-subscription are gone. Callback code that needs writable arrays makes an explicit
-copy.
+arrays as read-only NumPy views of the received C message, so `from_ros` can wrap
+them without copying.
 
-Publication snapshots the Python value into a C message, so changing the custom
-object after `publish` does not change what subscribers receive.
+## Factory functions
 
-## Limits
-
-- Custom Python objects are not shared between endpoints. The rcl broker can share
-  an adapted object by key (`rcl_publish_ipc_adapted`), but `rclpy.type_adapter`
-  does not use it.
-- `Node.create_publisher` and `Node.create_subscription` take no adapter argument;
-  use the factory functions in `rclpy.type_adapter`.
-- Serialized and raw consumers always receive the wire representation.
+`rclpy.type_adapter.create_publisher(node, custom_type, ...)` and
+`create_subscription(node, custom_type, ...)` select a registered or explicit adapter
+for a custom type and call the node methods. The publisher they return,
+`AdaptedPublisher`, publishes custom objects only; its `ros_publisher` is the node's
+publisher.

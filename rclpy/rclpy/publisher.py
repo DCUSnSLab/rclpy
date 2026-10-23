@@ -20,6 +20,8 @@ from rclpy.event_handler import EventHandler
 from rclpy.event_handler import PublisherEventCallbacks
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.qos import QoSProfile
+from rclpy.type_adapter import _broker_key
+from rclpy.type_adapter import TypeAdapter
 
 MsgType = TypeVar('MsgType')
 
@@ -54,6 +56,8 @@ class LoanedMessage(Generic[MsgType]):
 
 
 class Publisher:
+
+    _type_adapter: Optional[TypeAdapter] = None
 
     def __init__(
         self,
@@ -93,12 +97,20 @@ class Publisher:
         :param msg: The ROS message to publish. A :class:`LoanedMessage` is published without
           copying it, unless NumPy views of it are still referenced outside of its message; then
           a copy is published. Either way its message can no longer be used.
+          A publisher with a :attr:`type_adapter` also publishes instances of its custom type.
+          Subscriptions with the same adapter in this process receive the object itself through
+          the intra-process broker, so it must not be modified after it is published.
         :raises: TypeError if the type of the passed message isn't an instance
           of the provided type when the publisher was constructed.
         """
         with self.handle:
             if isinstance(msg, self.msg_type):
                 self.__publisher.publish(msg)
+            elif self._type_adapter is not None and \
+                    isinstance(msg, self._type_adapter.custom_type):
+                adapter = self._type_adapter
+                self.__publisher.publish_adapted(
+                    msg, _broker_key(adapter), adapter.to_ros, self.msg_type)
             elif isinstance(msg, bytes):
                 self.__publisher.publish_raw(msg)
             elif isinstance(msg, LoanedMessage):
@@ -143,6 +155,11 @@ class Publisher:
                 return LoanedMessage(self.msg_type())
             loan, msg = self.__publisher.borrow_loaned_message(self.msg_type)
             return LoanedMessage(msg, loan)
+
+    @property
+    def type_adapter(self) -> Optional[TypeAdapter]:
+        """Get the type adapter the publisher was created with, or ``None``."""
+        return self._type_adapter
 
     def get_subscription_count(self) -> int:
         """Get the amount of subscribers that this publisher has."""
