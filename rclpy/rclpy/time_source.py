@@ -25,6 +25,7 @@ from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.time import Time
+from rclpy.type_support import check_is_valid_msg_type
 import rosgraph_msgs.msg
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ class _ClockThread:
         self, node: 'Node', on_clock: Callable[[rosgraph_msgs.msg.Clock], None]
     ) -> None:
         self._context = node.context
+        check_is_valid_msg_type(rosgraph_msgs.msg.Clock)
         with node.handle:
             self._subscription = _rclpy.Subscription(
                 node.handle, rosgraph_msgs.msg.Clock, CLOCK_TOPIC,
