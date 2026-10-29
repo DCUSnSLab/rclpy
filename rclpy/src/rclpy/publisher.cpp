@@ -220,12 +220,17 @@ Publisher::publish(py::object pymsg)
   }
 
   rcl_ret_t ret;
-  if (rcl_publisher_is_ipc_enabled(rcl_publisher_.get())) {
-    auto owner = new decltype(raw_ros_message)(std::move(raw_ros_message));
-    ret = rcl_publish_ipc_owned(rcl_publisher_.get(), owner->get(),
-        [](void * value) {delete static_cast<decltype(owner)>(value);}, owner);
-  } else {
-    ret = rcl_publish(rcl_publisher_.get(), raw_ros_message.get(), NULL);
+  {
+    // A publish can wait on middleware locks that a thread waiting for the GIL holds, such as
+    // a zenoh reader releasing a type adapted message, or an adapted fill of this publisher.
+    py::gil_scoped_release release;
+    if (rcl_publisher_is_ipc_enabled(rcl_publisher_.get())) {
+      auto owner = new decltype(raw_ros_message)(std::move(raw_ros_message));
+      ret = rcl_publish_ipc_owned(rcl_publisher_.get(), owner->get(),
+          [](void * value) {delete static_cast<decltype(owner)>(value);}, owner);
+    } else {
+      ret = rcl_publish(rcl_publisher_.get(), raw_ros_message.get(), NULL);
+    }
   }
   if (RCL_RET_OK != ret) {
     throw RCLError("Failed to publish");
@@ -292,15 +297,20 @@ Publisher::publish_loaned_message(py::object pyloan, py::object pymsg)
   }
   convert_from_py(pymsg, loan->message);
   detach_views(pymsg, loan.get());
-  if (loan->buffers > 0) {
-    // Python still references the loan, which the middleware would own once published.
-    if (RCL_RET_OK != rcl_publish(rcl_publisher_.get(), loan->message, NULL)) {
-      throw RCLError("Failed to publish");
-    }
-    return false;
+  // Python still references the loan when views remain, so it is copied instead of handed over.
+  const bool copy = loan->buffers > 0;
+  rcl_ret_t ret;
+  {
+    py::gil_scoped_release release;
+    ret = copy ?
+      rcl_publish(rcl_publisher_.get(), loan->message, NULL) :
+      rcl_publish_loaned_message(rcl_publisher_.get(), loan->message, NULL);
   }
-  if (RCL_RET_OK != rcl_publish_loaned_message(rcl_publisher_.get(), loan->message, NULL)) {
+  if (RCL_RET_OK != ret) {
     throw RCLError("Failed to publish");
+  }
+  if (copy) {
+    return false;
   }
   loan->published = true;
   return true;
@@ -314,7 +324,11 @@ Publisher::publish_raw(std::string msg)
   serialized_msg.buffer_length = msg.size();
   serialized_msg.buffer = reinterpret_cast<uint8_t *>(const_cast<char *>(msg.c_str()));
 
-  rcl_ret_t ret = rcl_publish_serialized_message(rcl_publisher_.get(), &serialized_msg, NULL);
+  rcl_ret_t ret;
+  {
+    py::gil_scoped_release release;
+    ret = rcl_publish_serialized_message(rcl_publisher_.get(), &serialized_msg, NULL);
+  }
   if (RCL_RET_OK != ret) {
     throw RCLError("Failed to publish");
   }
