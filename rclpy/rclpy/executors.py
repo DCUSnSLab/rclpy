@@ -1107,7 +1107,9 @@ class MultiThreadedExecutor(Executor):
             pass
         else:
             self._executor.submit(handler)
-            self._futures.append(handler)
+            # A task resumed after awaiting a future is dispatched again as the same handler.
+            if handler not in self._futures:
+                self._futures.append(handler)
             done_futures = [f for f in self._futures if f.done() or f.cancelled()]
             for future in done_futures:
                 self._futures.remove(future)
