@@ -96,13 +96,6 @@ convert_to_py_owned(
   void * raw_message, std::unique_ptr<void, destroy_ros_message_function *> owner,
   py::object pyclass);
 
-/// Convert \p message to \p pyclass with NumPy views whose base is \p owner.
-/**
- * Messages generated without views, or without numeric arrays, are copied instead.
- */
-py::object
-convert_to_py_with_owner(void * message, py::handle owner, py::object pyclass);
-
 /// Return the identifier of the current rmw_implementation
 /**
  * \return string containing the identifier of the current rmw_implementation

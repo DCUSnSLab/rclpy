@@ -142,35 +142,19 @@ convert_to_py_capsule(const py::object & pyclass)
   }
   return py::handle(cls).attr("_CONVERT_TO_PY").cast<py::capsule>();
 }
-
-using OwnedConverter = PyObject * (*)(void *, PyObject *);
-
-py::object
-copy_to_py(void * message, const py::capsule & capsule)
-{
-  typedef PyObject * convert_to_py_function (void *);
-  auto convert = reinterpret_cast<convert_to_py_function *>(static_cast<void *>(capsule));
-  if (!convert) {
-    throw py::error_already_set();
-  }
-  return py::reinterpret_steal<py::object>(convert(message));
-}
-
-py::object
-view_to_py(void * message, py::handle owner, OwnedConverter convert)
-{
-  PyObject * result = convert(message, owner.ptr());
-  if (result == nullptr) {
-    throw py::error_already_set();
-  }
-  return py::reinterpret_steal<py::object>(result);
-}
 }  // namespace
 
 py::object
 convert_to_py(void * message, py::object pyclass)
 {
-  return copy_to_py(message, convert_to_py_capsule(pyclass));
+  auto capsule_ptr = static_cast<void *>(convert_to_py_capsule(pyclass));
+
+  typedef PyObject * convert_to_py_function (void *);
+  auto convert = reinterpret_cast<convert_to_py_function *>(capsule_ptr);
+  if (!convert) {
+    throw py::error_already_set();
+  }
+  return py::reinterpret_steal<py::object>(convert(message));
 }
 
 py::object
@@ -190,10 +174,20 @@ convert_to_py_owned(
       const char * setting = std::getenv("RCLPY_MESSAGE_ARRAYS");
       return setting != nullptr && std::strcmp(setting, "numpy") == 0;
     }();
+  if (!numpy_views) {
+    return convert_to_py(raw_message, pyclass);
+  }
   auto capsule = convert_to_py_capsule(pyclass);
-  auto convert = reinterpret_cast<OwnedConverter>(PyCapsule_GetContext(capsule.ptr()));
-  if (!numpy_views || convert == nullptr) {
-    return copy_to_py(raw_message, capsule);
+  using Converter = PyObject * (*)(void *, PyObject *);
+  auto convert = reinterpret_cast<Converter>(PyCapsule_GetContext(capsule.ptr()));
+  if (convert == nullptr) {
+    using CopyConverter = PyObject * (*)(void *);
+    auto convert_copy = reinterpret_cast<CopyConverter>(static_cast<void *>(capsule));
+    PyObject * result = convert_copy(raw_message);
+    if (result == nullptr) {
+      throw py::error_already_set();
+    }
+    return py::reinterpret_steal<py::object>(result);
   }
   using Message = std::unique_ptr<void, destroy_ros_message_function *>;
   auto holder = std::make_unique<Message>(std::move(message));
@@ -201,18 +195,11 @@ convert_to_py_owned(
       delete static_cast<Message *>(pointer);
     });
   holder.release();
-  return view_to_py(raw_message, owner, convert);
-}
-
-py::object
-convert_to_py_with_owner(void * message, py::handle owner, py::object pyclass)
-{
-  auto capsule = convert_to_py_capsule(pyclass);
-  auto convert = reinterpret_cast<OwnedConverter>(PyCapsule_GetContext(capsule.ptr()));
-  if (convert == nullptr) {
-    return copy_to_py(message, capsule);
+  PyObject * result = convert(raw_message, owner.ptr());
+  if (result == nullptr) {
+    throw py::error_already_set();
   }
-  return view_to_py(message, owner, convert);
+  return py::reinterpret_steal<py::object>(result);
 }
 
 const char *
