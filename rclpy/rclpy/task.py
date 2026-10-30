@@ -44,7 +44,7 @@ class Future:
         # An exception raised by the handler when called
         self._exception = None
         self._exception_fetched = False
-        # callbacks to be scheduled after this task completes
+        # callbacks or tasks to be scheduled after this task completes
         self._callbacks = []
         # Lock for threadsafety
         self._lock = threading.Lock()
@@ -342,6 +342,7 @@ class Task(Future):
         elif future_executor is not executor:
             raise RuntimeError('A task can only await futures associated with the same executor')
 
+        # Register the task to resume when the future is done or cancelled
         future._add_waiting_task(self)
 
     def _complete_task(self) -> None:

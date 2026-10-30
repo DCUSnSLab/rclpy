@@ -190,6 +190,9 @@ class Executor(RclExecutorMixin, ContextManager['Executor']):
         super().__init__()
         self._core = None
         self._context = get_default_context() if context is None else context
+        # A single stable wake-on-done callback, registered at most once per future (see
+        # _add_wake_on_done), so repeated spins on the same future never accumulate callbacks.
+        self._wake_on_done_cb: Callable[[Future], None] = lambda future: self.wake()
         self._nodes: Set[Node] = set()
         self._nodes_lock = RLock()
         # all tasks that are not complete or canceled
@@ -424,19 +427,21 @@ class Executor(RclExecutorMixin, ContextManager['Executor']):
         finally:
             self._exit_spin()
 
-        # MultiThreadedExecutor runs the handler on a worker thread, so the loop can see the
-        # future done before any spin re-raised its exception.
+        # If the future completed with an exception, re-raise it. The
+        # SingleThreadedExecutor re-raises synchronously inside _spin_once_impl
+        # so we never reach this code in that case. The MultiThreadedExecutor
+        # runs handlers on worker threads; the outer loop above can observe
+        # future.done() == True and exit before the next _spin_once_impl
+        # iteration would have called future.result(). Surfacing the
+        # exception here keeps the contract uniform across executor types.
         if future.done():
             exc = future.exception()
             if exc is not None:
                 raise exc
 
-    def _wake_on_done(self, future: Future) -> None:
-        self.wake()
-
     def _add_wake_on_done(self, future: Future) -> None:
-        # Bound methods compare equal, so repeated waits on one future register one callback.
-        future.add_done_callback(self._wake_on_done, unique=True)
+        """Register the wake-on-done callback at most once per future."""
+        future.add_done_callback(self._wake_on_done_cb, unique=True)
 
     def spin_once(self, timeout_sec: Optional[float] = None) -> None:
         """
@@ -738,8 +743,8 @@ class Executor(RclExecutorMixin, ContextManager['Executor']):
                 ready_tasks_count = len(self._ready_tasks)
             for _ in range(ready_tasks_count):
                 task = self._ready_tasks.popleft()
-                # A task cancelled or finished while awaiting a future is still rescheduled
-                # when that future completes.
+                # Skip tasks that were cancelled or set done while awaiting a
+                # future and got rescheduled when the future completed
                 if task.cancelled() or task.done():
                     continue
                 task_data = self._pending_tasks[task]
@@ -1102,15 +1107,11 @@ class MultiThreadedExecutor(Executor):
             pass
         else:
             self._executor.submit(handler)
-            # A task resumed after awaiting a future is dispatched again as the same handler.
-            if handler not in self._futures:
-                self._futures.append(handler)
-            # make a copy of the list that we iterate over while modifying it
-            # (https://stackoverflow.com/q/1207406/3753684)
-            for future in self._futures[:]:
-                if future.done() or future.cancelled():
-                    self._futures.remove(future)
-                    future.result()  # raise any exceptions
+            self._futures.append(handler)
+            done_futures = [f for f in self._futures if f.done() or f.cancelled()]
+            for future in done_futures:
+                self._futures.remove(future)
+                future.result()  # raise any exceptions
 
             # Yield GIL so executor threads have a chance to run.
             os.sched_yield() if hasattr(os, 'sched_yield') else time.sleep(0)
