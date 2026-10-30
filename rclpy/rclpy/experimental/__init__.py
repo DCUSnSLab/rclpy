@@ -13,4 +13,3 @@
 # limitations under the License.
 
 from .events_executor import EventsExecutor  # noqa: F401
-from .rcl_executor import RclExecutor, SelectionPolicy  # noqa: F401

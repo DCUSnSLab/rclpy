@@ -12,7 +12,6 @@ import unittest
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.executors import SingleThreadedExecutor
-from rclpy.experimental import RclExecutor
 from rclpy.qos import QoSProfile
 from test_msgs.msg import Empty
 
@@ -28,7 +27,7 @@ class TestExecutorSpinSome(unittest.TestCase):
         rclpy.shutdown(context=self.context)
 
     def for_each_executor(self, body):
-        for executor_type in (SingleThreadedExecutor, MultiThreadedExecutor, RclExecutor):
+        for executor_type in (SingleThreadedExecutor, MultiThreadedExecutor):
             with self.subTest(executor=executor_type.__name__):
                 node = rclpy.create_node('spin_some', context=self.context)
                 executor = executor_type(context=self.context)

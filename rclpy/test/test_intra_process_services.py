@@ -12,6 +12,7 @@
 import os
 import time
 import unittest
+from unittest import mock
 
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse
@@ -49,7 +50,6 @@ class TestIntraProcessServices(unittest.TestCase):
         return future.result()
 
     def test_multiple_clients_and_core_executor(self):
-        from rclpy.experimental import RclExecutor
         calls = []
 
         def callback(request, response):
@@ -64,7 +64,8 @@ class TestIntraProcessServices(unittest.TestCase):
             executor = self.executor
             if core:
                 self.executor.remove_node(self.node)
-                executor = RclExecutor(context=self.context)
+                with mock.patch.dict(os.environ, {'ROS_EXECUTOR_CORE': '1'}):
+                    executor = SingleThreadedExecutor(context=self.context)
                 executor.add_node(self.node)
             try:
                 futures = [client.call_async(BasicTypes.Request(

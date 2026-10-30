@@ -10,7 +10,6 @@
 #include <rcl_executor/executor.h>
 #include <rcl_executor/trace.h>
 #include <rcl/error_handling.h>
-#include <exception>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -48,17 +47,14 @@ class RclExecutorCore
   std::unique_ptr<ScopedSignalCallback> signal_;
   std::unordered_map<uint64_t, std::shared_ptr<events_executor::ScopedWith>> lifetimes_;
   std::unordered_map<uint64_t, View> views_;
-  std::unordered_map<void *, std::unique_ptr<py::object>> posted_;
-  std::unordered_map<uint64_t, std::unique_ptr<py::object>> sources_;
   // Subscriptions whose callback is a plain function, keyed by registration, with that callback.
   std::unordered_map<uint64_t, std::pair<py::object, py::object>> plain_;
   std::vector<rcl_executor_id_t> pass_;
 
 public:
-  explicit RclExecutorCore(int policy)
+  RclExecutorCore()
   {
-    checked(rcl_executor_create_with_policy(
-        &core_, static_cast<rcl_executor_selection_policy_t>(policy)));
+    checked(rcl_executor_create(&core_));
     checked(rcl_executor_set_trace_client(core_, RCL_EXECUTOR_TRACE_RCLPY));
     handle_ = rcl_executor_get_handle(core_);
     signal_ = std::make_unique<ScopedSignalCallback>([this] {rcl_executor_wake(handle_);});
@@ -77,53 +73,14 @@ public:
     views_.clear();
     plain_.clear();
     lifetimes_.clear();
-    posted_.clear();
-    sources_.clear();
   }
-  void partitioned(bool value) {checked(rcl_executor_set_partitioned(core_, value));}
   void remove_group(uint64_t id) {checked(rcl_executor_remove_group(core_, id));}
-  void spin(py::object dispatch, py::object start)
-  {
-    struct Driver
-    {
-      RclExecutorCore * self;
-      py::object dispatch;
-      py::object start;
-      std::exception_ptr error;
-      void fail()
-      {
-        if (!error) {error = std::current_exception();}
-        self->stop();
-      }
-    } driver{this, dispatch, start, nullptr};
-    checked(rcl_executor_set_thread_start(core_, [](size_t index, uint64_t group, void * data) {
-        py::gil_scoped_acquire acquire;
-        auto & d = *static_cast<Driver *>(data);
-        try {d.start(index, group);} catch (...) {d.fail();}
-      }, &driver));
-    rcl_ret_t result;
-    {
-      py::gil_scoped_release release;
-      result = rcl_executor_spin(core_, 1, [](const rcl_executor_item_t * item, void * data) {
-            py::gil_scoped_acquire acquire;
-            auto & d = *static_cast<Driver *>(data);
-            try {d.dispatch(d.self->claimed(*item));} catch (...) {d.fail();}
-        }, &driver);
-    }
-    checked(rcl_executor_set_thread_start(core_, nullptr, nullptr));
-    if (driver.error) {std::rethrow_exception(driver.error);}
-    checked(result);
-  }
   void wake() {rcl_executor_wake(handle_);}
   void stop() {rcl_executor_stop(handle_);}
   void group(uint64_t id, bool reentrant)
   {
     checked(rcl_executor_add_group(core_, id,
       reentrant ? RCL_EXECUTOR_REENTRANT : RCL_EXECUTOR_MUTUALLY_EXCLUSIVE));
-  }
-  void priority(uint64_t id, int32_t value)
-  {
-    checked(rcl_executor_set_group_priority(core_, id, value));
   }
   uint64_t add_raw(int type, const void * pointer, uintptr_t context, uint64_t group_id)
   {
@@ -182,31 +139,13 @@ public:
     views_.erase(id);
     plain_.erase(id);
     lifetimes_.erase(id);
-    sources_.erase(id);
   }
-  // claimed() returns source itself as the key of its items.
-  uint64_t add_source(py::object source, uint64_t group_id)
-  {
-    auto owned = std::make_unique<py::object>(std::move(source));
-    auto id = add_raw(RCL_EXECUTOR_WORK, nullptr, reinterpret_cast<uintptr_t>(owned.get()),
-        group_id);
-    sources_.emplace(id, std::move(owned));
-    return id;
-  }
-  void notify(uint64_t id, size_t count) {checked(rcl_executor_notify(core_, id, count));}
   int wait(int64_t ns)
   {
     py::gil_scoped_release release;
     auto result = rcl_executor_wait(core_, ns);
     if (result == RCL_EXECUTOR_ERROR) {throw RCLError("rcl executor wait failed");}
     return result;
-  }
-  void post(py::object work)
-  {
-    auto owned = std::make_unique<py::object>(std::move(work));
-    void * context = owned.get();
-    posted_.emplace(context, std::move(owned));
-    checked(rcl_executor_post(core_, nullptr, context, 0));
   }
   void set_plain(uint64_t id, py::object subscription, py::object callback)
   {
@@ -278,18 +217,6 @@ private:
   }
   py::object claimed(const rcl_executor_item_t & item)
   {
-    auto posted = posted_.find(item.context);
-    if (item.type == RCL_EXECUTOR_WORK && posted != posted_.end()) {
-      py::object work = *posted->second;
-      posted_.erase(posted);
-      return py::make_tuple(work, item.token, static_cast<int>(item.type));
-    }
-    if (item.type == RCL_EXECUTOR_WORK && item.context) {
-      // A source removed after the core handed out this item has no key: the item is skipped.
-      auto source = sources_.find(item.registration);
-      py::object key = source == sources_.end() ? py::none() : *source->second;
-      return py::make_tuple(key, item.token, static_cast<int>(item.type));
-    }
     auto found = views_.find(item.registration);
     if (found != views_.end()) {
       for (auto & view : views_) {
@@ -309,16 +236,11 @@ public:
 void define_rcl_executor(py::module_ & module)
 {
   py::class_<RclExecutorCore>(module, "RclExecutorCore")
-  .def(py::init<int>(), py::arg("selection_policy") = 0)
-  .def("set_partitioned", &RclExecutorCore::partitioned)
+  .def(py::init<>())
   .def("remove_group", &RclExecutorCore::remove_group)
-  .def("spin", &RclExecutorCore::spin)
-  .def("set_group_priority", &RclExecutorCore::priority)
   .def("add_group", &RclExecutorCore::group)
   .def("add", &RclExecutorCore::add)
   .def("add_waitable", &RclExecutorCore::add_waitable)
-  .def("add_source", &RclExecutorCore::add_source)
-  .def("notify", &RclExecutorCore::notify)
   .def("remove", &RclExecutorCore::remove)
   .def("wait", &RclExecutorCore::wait)
   .def("next", &RclExecutorCore::next)
@@ -326,7 +248,6 @@ void define_rcl_executor(py::module_ & module)
   .def("next_in_pass", &RclExecutorCore::next_in_pass)
   .def("set_plain", &RclExecutorCore::set_plain)
   .def("dispatch", &RclExecutorCore::dispatch)
-  .def("post", &RclExecutorCore::post)
   .def("complete", &RclExecutorCore::complete)
   .def("wake", &RclExecutorCore::wake)
   .def("stop", &RclExecutorCore::stop)

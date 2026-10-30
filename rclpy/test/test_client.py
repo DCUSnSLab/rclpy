@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import platform
 import threading
 import time
 import traceback
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
 from rcl_interfaces.srv import GetParameters
@@ -65,14 +67,14 @@ class TestClient(unittest.TestCase):
         self.assertEqual(cli._pending_requests, {})
 
     def test_pending_requests_with_core_executor(self):
-        from rclpy.experimental import RclExecutor
         from rclpy.qos import QoSProfile
 
         qos = QoSProfile(depth=128)
         cli = self.node.create_client(Empty, 'core_pending_requests', qos_profile=qos)
         srv = self.node.create_service(
             Empty, 'core_pending_requests', lambda request, response: response, qos_profile=qos)
-        executor = RclExecutor(context=self.context)
+        with mock.patch.dict(os.environ, {'ROS_EXECUTOR_CORE': '1'}):
+            executor = rclpy.executors.SingleThreadedExecutor(context=self.context)
         executor.add_node(self.node)
         try:
             self.assertTrue(cli.wait_for_service(timeout_sec=5))

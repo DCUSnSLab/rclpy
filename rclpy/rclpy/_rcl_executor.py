@@ -9,9 +9,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from enum import IntEnum
 import inspect
-import threading
 import time
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING, Union
 
@@ -98,130 +96,20 @@ class _DirectCall:
             raise self._exception
 
 
-class _Source:
-    """A callback that an external event source schedules with ``notify_source``."""
-
-    __slots__ = ('callback', 'group')
-
-    def __init__(self, callback, group):
-        self.callback = callback
-        self.group = group
-
-
-class SelectionPolicy(IntEnum):
-    """Selection order for the shared scheduler."""
-
-    FIFO = 0
-    WAIT_SET = 1
-    PRIORITY = 2
-
-
 class RclExecutorMixin:
     """Execute Python tasks using the shared rcl event scheduler."""
 
-    def _init_core(
-        self, *, selection_policy: Optional[SelectionPolicy] = None,
-        partitioned: bool = False, on_thread_start: Optional[Callable] = None
-    ):
-        if selection_policy is None:
-            selection_policy = SelectionPolicy.WAIT_SET if partitioned else SelectionPolicy.FIFO
-        self._partitioned = partitioned
-        self._on_thread_start = on_thread_start
-        self._partition_running = False
-        self._partition_stopping = False
+    def _init_core(self):
         self._groups = {}
-        self._resuming = {}
-        self._core = _rclpy.RclExecutorCore(int(SelectionPolicy(selection_policy)))
-        self._core.set_partitioned(partitioned)
+        self._core = _rclpy.RclExecutorCore()
         self._entities: Dict = {}
         self._dirty = True
         self._selected_nodes = ()
         self._plain: Dict = {}
-        self._sources: Dict = {}
         self._claimed_item = None
         self._core_thread_pool = False
         self._internal = [self._core.add(5, guard.handle, 0, 0)
                           for guard in [self._guard, self._sigint_gc]]
-
-    def _core_add_node(self, node):
-        """Associate a node, refusing Reentrant groups in partition mode."""
-        if self._partitioned:
-            entities = [*node.subscriptions, *node.timers, *node.services, *node.clients,
-                        *node.guards, *node.waitables]
-            if any(isinstance(e.callback_group, ReentrantCallbackGroup) for e in entities):
-                raise ValueError('partition mode refuses Reentrant callback groups')
-        from rclpy.executors import Executor
-        return Executor.add_node(self, node)
-
-    def _stop_partitions(self):
-        self._partition_stopping = True
-        self._core.stop()
-        for event in list(self._resuming.values()):
-            event.set()
-
-    def _thread_started(self, index, group):
-        try:
-            if self._on_thread_start is not None:
-                self._on_thread_start(index, self._groups.get(group))
-        except BaseException:
-            self._stop_partitions()
-            raise
-
-    def _partition_sync(self):
-        self._collect(self.get_nodes())
-        with self._tasks_lock:
-            ready = list(self._ready_tasks)
-            self._ready_tasks.clear()
-            for task in list(self._pending_tasks):
-                if task.done() or task.cancelled():
-                    del self._pending_tasks[task]
-        for task in ready:
-            if not task.done() and not task.cancelled():
-                self._core.post(task)
-
-    def _partition_execute(self, item):
-        try:
-            self._partition_dispatch(item)
-        except BaseException:
-            self._stop_partitions()
-            raise
-
-    def _partition_dispatch(self, item):
-        if self._is_shutdown or not self._context.ok():
-            self._stop_partitions()
-            return
-        key, _, kind = item
-        if kind == 6 and isinstance(key, _Source):
-            task = self._source_task(key)
-        elif kind == 6:
-            if key is None:
-                return
-            task = key if isinstance(key, Task) else Task(key, executor=self)
-            task()
-            if task.done():
-                task.result()
-            return
-        elif key == 0:
-            self._partition_sync()
-            return
-        elif key in self._entities:
-            entity, node, waitset, _, _ = self._entities[key]
-            task = self._claimed_handler(entity, node, waitset, None, kind)
-        else:
-            return
-        event = threading.Event()
-        self._resuming[task] = event
-        try:
-            while not self._is_shutdown and not self._partition_stopping:
-                event.clear()
-                task()
-                if task.done() or task.cancelled():
-                    task.result()
-                    return
-                event.wait()
-            task.cancel()
-        finally:
-            del self._resuming[task]
 
     def _core_remove_node(self, node) -> None:
         """Remove a node and detach its readiness callbacks before it can move."""
@@ -236,17 +124,8 @@ class RclExecutorMixin:
         """Recollect entities and interrupt the current wait."""
         self._dirty = True
         self._core.wake()
-        if self._partition_running:
-            self._core.post(self._partition_sync)
 
     def _core_call_task_in_next_spin(self, task: Task) -> None:
-        event = self._resuming.get(task)
-        if event is not None:
-            event.set()
-            return
-        if self._partition_running:
-            self._core.post(task)
-            return
         with self._tasks_lock:
             self._ready_tasks.append(task)
         self._core.wake()
@@ -275,7 +154,6 @@ class RclExecutorMixin:
                 self._remove_entity(key)
         groups = {id(entity.callback_group): entity.callback_group
                   for entity, _, _ in desired.values()}
-        groups.update((id(source.group), source.group) for source in self._sources.values())
         for key in self._groups.keys() - groups.keys():
             self._core.remove_group(key)
         self._groups = groups
@@ -312,13 +190,6 @@ class RclExecutorMixin:
             if cached[1]:
                 self._core.set_plain(self._entities[id(sub)][3][0], sub, callback)
         return cached[1]
-
-    def _source_task(self, source, token=None):
-        from rclpy.executors import TaskData
-        task = _ClaimedTask(source.callback, self, token)
-        with self._tasks_lock:
-            self._pending_tasks[task] = TaskData()
-        return task
 
     def _claimed_handler(self, entity, node, waitset, token, kind):
         from rclpy.executors import await_or_execute, TaskData
@@ -396,16 +267,6 @@ class RclExecutorMixin:
                 item = self._core.next_in_pass() if in_pass else self._core.next()
             if item is not None:
                 key, token, kind = item
-                if kind == 6 and isinstance(key, _Source):
-                    yield self._source_task(key, token), None, None
-                    return
-                if kind == 6:
-                    self._core.complete(token)
-                    if key is None:
-                        continue
-                    task = key if isinstance(key, Task) else Task(key, executor=self)
-                    yield task, None, None
-                    return
                 if key == 0 or key not in self._entities:
                     self._core.complete(token)
                     self._dirty = True
@@ -450,15 +311,6 @@ class RclExecutorMixin:
     def _core_spin(self) -> None:
         self._enter_spin()
         try:
-            if self._partitioned:
-                self._partition_sync()
-                self._partition_running = True
-                try:
-                    self._core.spin(self._partition_execute, self._thread_started)
-                finally:
-                    self._partition_running = False
-                return
-            self._thread_started(0, 0)
             while self._context.ok() and not self._is_shutdown:
                 if not self._core_dispatch(64, lambda: False):
                     self._spin_once_impl()
@@ -469,8 +321,6 @@ class RclExecutorMixin:
         """Stop dispatch and cancel suspended tasks, releasing their groups."""
         self._is_shutdown = True
         self._core.stop()
-        for event in list(self._resuming.values()):
-            event.set()
         with self._tasks_lock:
             tasks = list(self._pending_tasks)
         for task in tasks:
@@ -478,9 +328,6 @@ class RclExecutorMixin:
                 task.cancel()
         for key in list(self._entities):
             self._remove_entity(key)
-        for registration in list(self._sources):
-            self._core.remove(registration)
-        self._sources.clear()
         for registration in self._internal:
             self._core.remove(registration)
         self._internal.clear()

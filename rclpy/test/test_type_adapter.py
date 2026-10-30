@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from unittest import mock
 from unittest.mock import Mock
 import weakref
 
@@ -184,13 +185,15 @@ def wait_for_subscriptions(executor, publisher, count):
     spin_until(executor, lambda: publisher.get_subscription_count() >= count)
 
 
-@pytest.mark.parametrize('executor_type', ['single', 'rcl', 'events'])
+@pytest.mark.parametrize('executor_type', ['single', 'core', 'events'])
 def test_node_endpoints_deliver_custom_objects(broker_context, executor_type):
-    from rclpy.experimental import EventsExecutor, RclExecutor
+    from rclpy.experimental import EventsExecutor
     context, broker = broker_context
     node = rclpy.create_node('adapted_node_api', context=context)
-    executor = {'single': SingleThreadedExecutor, 'rcl': RclExecutor,
-                'events': EventsExecutor}[executor_type](context=context)
+    core = '1' if executor_type == 'core' else ''
+    with mock.patch.dict(os.environ, {'ROS_EXECUTOR_CORE': core}):
+        executor = {'single': SingleThreadedExecutor, 'core': SingleThreadedExecutor,
+                    'events': EventsExecutor}[executor_type](context=context)
     counted = Counted()
     adapter = counted.adapter()
     adapted, ros, infos = [], [], []

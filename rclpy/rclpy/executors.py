@@ -42,7 +42,7 @@ from typing import Union
 
 import warnings
 
-from rclpy._rcl_executor import RclExecutorMixin, SelectionPolicy
+from rclpy._rcl_executor import RclExecutorMixin
 from rclpy.client import Client
 from rclpy.clock import Clock
 from rclpy.clock_type import ClockType
@@ -987,12 +987,10 @@ class Executor(RclExecutorMixin, ContextManager['Executor']):
 class SingleThreadedExecutor(Executor):
     """Runs callbacks in the thread that calls :meth:`Executor.spin`."""
 
-    _use_core_default = True
-
     def __init__(self, *, context: Optional[Context] = None) -> None:
         super().__init__(context=context)
-        if self._use_core_default and os.environ.get('ROS_EXECUTOR_CORE') == '1':
-            self._init_core(selection_policy=SelectionPolicy.WAIT_SET)
+        if os.environ.get('ROS_EXECUTOR_CORE') == '1':
+            self._init_core()
 
     def spin(self) -> None:
         if self._core is not None:
@@ -1069,7 +1067,7 @@ class MultiThreadedExecutor(Executor):
     ) -> None:
         super().__init__(context=context)
         if os.environ.get('ROS_EXECUTOR_CORE') == '1':
-            self._init_core(selection_policy=SelectionPolicy.WAIT_SET)
+            self._init_core()
             self._core_thread_pool = True
 
         if num_threads is None:
