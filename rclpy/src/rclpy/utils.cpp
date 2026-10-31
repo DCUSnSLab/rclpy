@@ -104,16 +104,10 @@ create_from_py(py::object pymessage)
 std::unique_ptr<void, destroy_ros_message_function *>
 convert_from_py(py::object pymessage)
 {
+  typedef bool convert_from_py_signature (PyObject *, void *);
+
   std::unique_ptr<void, destroy_ros_message_function *> message =
     create_from_py(pymessage);
-  convert_from_py(pymessage, message.get());
-  return message;
-}
-
-void
-convert_from_py(py::object pymessage, void * message)
-{
-  typedef bool convert_from_py_signature (PyObject *, void *);
 
   auto pymetaclass = py::type::handle_of(pymessage);
 
@@ -125,9 +119,11 @@ convert_from_py(py::object pymessage, void * message)
     throw py::error_already_set();
   }
 
-  if (!convert(pymessage.ptr(), message)) {
+  if (!convert(pymessage.ptr(), message.get())) {
     throw py::error_already_set();
   }
+
+  return message;
 }
 
 namespace
@@ -161,21 +157,12 @@ py::object
 convert_to_py_owned(
   std::unique_ptr<void, destroy_ros_message_function *> message, py::object pyclass)
 {
-  void * raw_message = message.get();
-  return convert_to_py_owned(raw_message, std::move(message), pyclass);
-}
-
-py::object
-convert_to_py_owned(
-  void * raw_message, std::unique_ptr<void, destroy_ros_message_function *> message,
-  py::object pyclass)
-{
   static const bool numpy_views = []() {
       const char * setting = std::getenv("RCLPY_MESSAGE_ARRAYS");
       return setting != nullptr && std::strcmp(setting, "numpy") == 0;
     }();
   if (!numpy_views) {
-    return convert_to_py(raw_message, pyclass);
+    return convert_to_py(message.get(), pyclass);
   }
   auto capsule = convert_to_py_capsule(pyclass);
   using Converter = PyObject * (*)(void *, PyObject *);
@@ -183,13 +170,14 @@ convert_to_py_owned(
   if (convert == nullptr) {
     using CopyConverter = PyObject * (*)(void *);
     auto convert_copy = reinterpret_cast<CopyConverter>(static_cast<void *>(capsule));
-    PyObject * result = convert_copy(raw_message);
+    PyObject * result = convert_copy(message.get());
     if (result == nullptr) {
       throw py::error_already_set();
     }
     return py::reinterpret_steal<py::object>(result);
   }
   using Message = std::unique_ptr<void, destroy_ros_message_function *>;
+  void * raw_message = message.get();
   auto holder = std::make_unique<Message>(std::move(message));
   py::capsule owner(holder.get(), [](void * pointer) {
       delete static_cast<Message *>(pointer);

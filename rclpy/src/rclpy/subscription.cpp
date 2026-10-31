@@ -32,14 +32,11 @@
 
 #include <rcpputils/scope_exit.hpp>
 
-#include "rcl/intra_process.h"
-
 #include "exceptions.hpp"
 #include "node.hpp"
 #include "serialization.hpp"
 #include "subscription.hpp"
 #include "trace.hpp"
-#include "type_adapter.hpp"
 #include "utils.hpp"
 
 using pybind11::literals::operator""_a;
@@ -149,7 +146,7 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       auto start = std::chrono::steady_clock::now();
       std::chrono::steady_clock::time_point end;
       rcl_ret_t ret;
-      if (release_gil_ || adapted_messages_published()) {
+      if (release_gil_) {
         py::gil_scoped_release release;
         ret = call();
         end = std::chrono::steady_clock::now();
@@ -165,7 +162,6 @@ Subscription::take_message(py::object pymsg_type, bool raw)
   py::object pytaken_msg;
   rmw_message_info_t message_info;
   rcl_ret_t ret;
-  const void * adapted = nullptr;
   if (raw) {
     SerializedMessage taken{rcutils_get_default_allocator()};
     ret = take([&] {
@@ -186,51 +182,23 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       reinterpret_cast<const char *>(taken.rcl_msg.buffer),
       taken.rcl_msg.buffer_length);
   } else {
-    rcl_ipc_message_t * owner = nullptr;
-    const void * data = nullptr;
-    auto take_ipc = [&] {
-        return from_ros_ ?
-               rcl_take_ipc_adapted(
-          subscription.get(), adapter_key_.c_str(), &owner, &adapted, &data, &message_info) :
-               rcl_take_ipc_message(subscription.get(), &owner, &data, &message_info);
-      };
-    if (adapted_messages_published()) {
-      py::gil_scoped_release release;
-      ret = take_ipc();
-    } else {
-      ret = take_ipc();
-    }
-    if (ret == RCL_RET_OK) {
-      std::unique_ptr<void, destroy_ros_message_function *> guard(owner, [](void * value) {
-          rcl_ipc_message_release(static_cast<rcl_ipc_message_t *>(value));
-        });
-      if (adapted) {
-        pytaken_msg = static_cast<const AdaptedMessage *>(adapted)->value;
-      } else {
-        pytaken_msg = convert_to_py_owned(const_cast<void *>(data), std::move(guard), pymsg_type);
-      }
-    } else {
-      auto taken_msg = create_from_py(pymsg_type);
+    auto taken_msg = create_from_py(pymsg_type);
 
-      ret = take([&] {
-            return rcl_take(subscription.get(), taken_msg.get(), &message_info, NULL);
+    ret = take([&] {
+          return rcl_take(subscription.get(), taken_msg.get(), &message_info, NULL);
         });
-      if (RCL_RET_OK != ret) {
-        if (RCL_RET_BAD_ALLOC == ret) {
-          rcl_reset_error();
-          throw std::bad_alloc();
-        }
-        if (RCL_RET_SUBSCRIPTION_TAKE_FAILED == ret) {
-          return py::none();
-        }
-        throw RCLError("failed to take message from subscription");
+    if (RCL_RET_OK != ret) {
+      if (RCL_RET_BAD_ALLOC == ret) {
+        rcl_reset_error();
+        throw std::bad_alloc();
       }
-
-      pytaken_msg = convert_to_py_owned(std::move(taken_msg), pymsg_type);
+      if (RCL_RET_SUBSCRIPTION_TAKE_FAILED == ret) {
+        return py::none();
+      }
+      throw RCLError("failed to take message from subscription");
     }
-  }
-  if (from_ros_ && !raw && !adapted) {
-    pytaken_msg = from_ros_(pytaken_msg);
+
+    pytaken_msg = convert_to_py_owned(std::move(taken_msg), pymsg_type);
   }
   rclpy_trace_take_converted(subscription.get(), pytaken_msg.ptr());
   py::object pub_seq_number = py::none();
@@ -247,13 +215,6 @@ Subscription::take_message(py::object pymsg_type, bool raw)
       "received_timestamp"_a = message_info.received_timestamp,
       "publication_sequence_number"_a = pub_seq_number,
       "reception_sequence_number"_a = rec_seq_number));
-}
-
-void
-Subscription::set_type_adapter(std::string key, py::object from_ros)
-{
-  adapter_key_ = std::move(key);
-  from_ros_ = std::move(from_ros);
 }
 
 const char *
@@ -382,13 +343,6 @@ define_subscription(py::object module)
     py::arg("topic"),
     py::arg("qos_profile"),
     py::arg("content_filter_options") = py::none())
-  .def("set_serialized_ipc", [](Subscription & sub) {
-      rcl_subscription_set_serialized_ipc(sub.rcl_ptr());
-  })
-  .def("disable_ipc", [](Subscription & sub) {rcl_subscription_disable_ipc(sub.rcl_ptr());})
-  .def(
-    "set_type_adapter", &Subscription::set_type_adapter,
-    "Deliver custom objects of a type adapter")
   .def_property_readonly(
     "pointer", [](const Subscription & subscription) {
       return reinterpret_cast<size_t>(subscription.rcl_ptr());

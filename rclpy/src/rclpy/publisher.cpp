@@ -21,15 +21,11 @@
 
 #include <memory>
 #include <string>
-#include <utility>
-
-#include "rcl/intra_process.h"
 
 #include "exceptions.hpp"
 #include "node.hpp"
 #include "publisher.hpp"
 #include "trace.hpp"
-#include "type_adapter.hpp"
 #include "utils.hpp"
 
 namespace rclpy
@@ -135,40 +131,11 @@ Publisher::publish(py::object pymsg)
 
   rcl_ret_t ret;
   {
-    // A publish can wait on middleware locks that a thread waiting for the GIL holds, such as
-    // a zenoh reader releasing a type adapted message, or an adapted fill of this publisher.
+    // The C message holds no Python objects, so other Python threads run while it is sent.
     py::gil_scoped_release release;
-    if (rcl_publisher_is_ipc_enabled(rcl_publisher_.get())) {
-      auto owner = new decltype(raw_ros_message)(std::move(raw_ros_message));
-      ret = rcl_publish_ipc_owned(rcl_publisher_.get(), owner->get(),
-          [](void * value) {delete static_cast<decltype(owner)>(value);}, owner);
-    } else {
-      ret = rcl_publish(rcl_publisher_.get(), raw_ros_message.get(), NULL);
-    }
+    ret = rcl_publish(rcl_publisher_.get(), raw_ros_message.get(), NULL);
   }
   if (RCL_RET_OK != ret) {
-    throw RCLError("Failed to publish");
-  }
-}
-
-void
-Publisher::publish_adapted(
-  py::object value, const std::string & key, py::object to_ros, py::object pymsg_type)
-{
-  rclpy_trace_publish_enter(rcl_publisher_.get());
-  adapted_publisher_created();
-  auto adapted = std::make_unique<AdaptedMessage>(AdaptedMessage{
-      value, to_ros, pymsg_type, create_from_py(pymsg_type), std::this_thread::get_id()});
-  void * message = adapted->message.get();
-  rcl_ret_t ret;
-  {
-    py::gil_scoped_release release;
-    ret = rcl_publish_ipc_adapted(
-      rcl_publisher_.get(), message, key.c_str(), fill_adapted_message,
-      release_adapted_message, adapted.release());
-  }
-  if (RCL_RET_OK != ret) {
-    rethrow_adapted_fill_error();
     throw RCLError("Failed to publish");
   }
 }
@@ -216,12 +183,6 @@ define_publisher(py::object module)
   .def(
     "get_logger_name", &Publisher::get_logger_name,
     "Get the name of the logger associated with the node of the publisher")
-  .def(
-    "publish_adapted", &Publisher::publish_adapted,
-    "Publish a custom object that to_ros converts only for readers of the ROS message")
-  .def(
-    "enable_type_adapter", [](Publisher &) {adapted_publisher_created();},
-    "Prepare takes in this process for messages of a type adapted publisher")
   .def(
     "get_subscription_count", &Publisher::get_subscription_count,
     "Count subscribers from a publisher.")

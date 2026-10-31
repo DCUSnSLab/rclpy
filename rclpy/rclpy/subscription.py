@@ -15,7 +15,6 @@
 from enum import Enum
 import inspect
 from typing import Callable
-from typing import Optional
 from typing import TypeVar
 
 from rclpy.callback_groups import CallbackGroup
@@ -24,7 +23,6 @@ from rclpy.event_handler import SubscriptionEventCallbacks
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.qos import QoSProfile
 from rclpy.subscription_content_filter_options import ContentFilterOptions
-from rclpy.type_adapter import TypeAdapter
 
 
 # Re-export exception defined in _rclpy C extension.
@@ -35,8 +33,6 @@ MsgType = TypeVar('MsgType')
 
 
 class Subscription:
-
-    _type_adapter: Optional[TypeAdapter] = None
 
     class CallbackType(Enum):
         MessageOnly = 0
@@ -83,11 +79,6 @@ class Subscription:
 
         self.event_handlers: EventHandler = event_callbacks.create_event_handlers(
             callback_group, subscription_impl, topic)
-
-    @property
-    def type_adapter(self) -> Optional[TypeAdapter]:
-        """Get the type adapter whose custom type the callback receives, or ``None``."""
-        return self._type_adapter
 
     def get_publisher_count(self) -> int:
         """Get the number of publishers that this subscription has."""

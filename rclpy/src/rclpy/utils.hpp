@@ -70,10 +70,6 @@ create_from_py(py::object pyclass);
 std::unique_ptr<void, destroy_ros_message_function *>
 convert_from_py(py::object pyclass);
 
-/// Convert a ROS message from a Python type into the existing C message \p message.
-void
-convert_from_py(py::object pymessage, void * message);
-
 /// Convert a ROS message from a C type to a Python type.
 /**
  * Raises AttributeError if \p pyclass is missing a required attribute.
@@ -89,12 +85,6 @@ convert_to_py(void * message, py::object pyclass);
 py::object
 convert_to_py_owned(
   std::unique_ptr<void, destroy_ros_message_function *> message, py::object pyclass);
-
-/// Convert \p raw_message, which \p owner keeps alive, retaining owner for opt-in NumPy views.
-py::object
-convert_to_py_owned(
-  void * raw_message, std::unique_ptr<void, destroy_ros_message_function *> owner,
-  py::object pyclass);
 
 /// Return the identifier of the current rmw_implementation
 /**

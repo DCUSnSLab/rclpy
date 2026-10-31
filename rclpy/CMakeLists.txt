@@ -110,7 +110,6 @@ pybind11_add_module(_rclpy_pybind11
   src/rclpy/time_point.cpp
   src/rclpy/trace.cpp
   src/rclpy/timer.cpp
-  src/rclpy/type_adapter.cpp
   src/rclpy/type_description_service.cpp
   src/rclpy/utils.cpp
   src/rclpy/wait_set.cpp
@@ -181,7 +180,6 @@ if(BUILD_TESTING)
       test/test_action_server.py
       test/test_callback_group.py
       test/test_client.py
-      test/test_intra_process_services.py
       test/test_clock.py
       test/test_context.py
       test/test_create_node.py
@@ -224,7 +222,6 @@ if(BUILD_TESTING)
       test/test_timer.py
       test/test_topic_or_service_is_hidden.py
       test/test_topic_endpoint_info.py
-      test/test_type_adapter.py
       test/test_type_support.py
       test/test_type_hash.py
       test/test_utilities.py
