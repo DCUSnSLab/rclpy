@@ -59,10 +59,10 @@ convert_to_py_names_and_types(const rcl_names_and_types_t * names_and_types)
 void *
 common_get_type_support(py::object pymessage)
 {
-  auto pymetaclass = py::type::handle_of(pymessage);
+  py::object pymetaclass = pymessage.attr("__class__");
 
   py::object value = pymetaclass.attr("_TYPE_SUPPORT");
-  auto capsule_ptr = PyCapsule_GetPointer(value.ptr(), nullptr);
+  auto capsule_ptr = static_cast<void *>(value.cast<py::capsule>());
 
   return capsule_ptr;
 }
@@ -72,10 +72,10 @@ create_from_py(py::object pymessage)
 {
   typedef void * create_ros_message_function (void);
 
-  auto pymetaclass = py::type::handle_of(pymessage);
+  py::object pymetaclass = pymessage.attr("__class__");
 
   py::object value = pymetaclass.attr("_CREATE_ROS_MESSAGE");
-  auto capsule_ptr = PyCapsule_GetPointer(value.ptr(), nullptr);
+  auto capsule_ptr = static_cast<void *>(value.cast<py::capsule>());
   auto create_ros_message =
     reinterpret_cast<create_ros_message_function *>(capsule_ptr);
   if (!create_ros_message) {
@@ -83,7 +83,7 @@ create_from_py(py::object pymessage)
   }
 
   value = pymetaclass.attr("_DESTROY_ROS_MESSAGE");
-  capsule_ptr = PyCapsule_GetPointer(value.ptr(), nullptr);
+  capsule_ptr = static_cast<void *>(value.cast<py::capsule>());
   auto destroy_ros_message =
     reinterpret_cast<destroy_ros_message_function *>(capsule_ptr);
   if (!destroy_ros_message) {
@@ -106,10 +106,10 @@ convert_from_py(py::object pymessage)
   std::unique_ptr<void, destroy_ros_message_function *> message =
     create_from_py(pymessage);
 
-  auto pymetaclass = py::type::handle_of(pymessage);
+  py::object pymetaclass = pymessage.attr("__class__");
 
-  py::object value = pymetaclass.attr("_CONVERT_FROM_PY");
-  auto capsule_ptr = PyCapsule_GetPointer(value.ptr(), nullptr);
+  auto capsule_ptr = static_cast<void *>(
+    pymetaclass.attr("_CONVERT_FROM_PY").cast<py::capsule>());
   auto convert =
     reinterpret_cast<convert_from_py_signature *>(capsule_ptr);
   if (!convert) {
